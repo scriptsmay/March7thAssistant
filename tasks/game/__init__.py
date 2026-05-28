@@ -39,6 +39,13 @@ def start():
     log.hr("完成", 2)
 
 
+def switch_to_game():
+    log.hr("切换到游戏窗口", 0)
+    starrail = StarRailController(cfg=cfg, logger=log)
+    starrail.switch_to_game()
+    log.hr("完成", 2)
+
+
 def start_game():
     MAX_RETRY = 3
 
@@ -52,14 +59,10 @@ def start_game():
         auto.click_element("./assets/images/zh_CN/base/restart.png", "image", 0.9, take_screenshot=False)
         # 适配国际服，需要点击“开始游戏”
         auto.click_element("./assets/images/screen/start_game.png", "image", 0.9, take_screenshot=False)
-        # 适配B服，需要点击“登录”
-        auto.click_element("./assets/images/screen/bilibili_login.png", "image", 0.9, take_screenshot=False)
-        auto.click_element("./assets/images/screen/bilibili_login_2.png", "image", 0.9, take_screenshot=False)
         # 出现多账号登录页时，需要点击“登录其他账号”
         auto.click_element("./assets/images/screen/login_switch_account.png", "image", 0.9, take_screenshot=False)
         # 适配用户协议和隐私政策更新提示，需要点击“同意”
         auto.click_element("./assets/images/screen/agree_update.png", "image", 0.9, take_screenshot=False)
-        auto.click_element("./assets/images/screen/bilibili_agree_update.png", "image", 0.9, take_screenshot=False)
         # 登录过期
         if auto.find_element("./assets/images/screen/account_and_password.png", "image", 0.9, take_screenshot=False):
             if load_acc_and_pwd(gamereg_uid()) != (None, None):
@@ -71,41 +74,58 @@ def start_game():
             if load_acc_and_pwd(gamereg_uid()) != (None, None):
                 log.info("检测到登录过期，尝试自动登录")
                 auto_login_os()
-
         # 游戏已有新版本，请前往启动器下载最新客户端，完成本次更新后登录游戏即可获
         # 得300星琼奖励。
         if auto.find_element("前往启动器下载最新客户端", "text", take_screenshot=False, include=True):
             raise Exception("检测到游戏客户端版本过低，请前往启动器下载最新客户端")
+
+        # 适配B服，需要点击“登录”，强制使用前台截图方式（#901）
+        if auto.find_element(("bilibili游戏隐私政策提示", "登录记录"), "text", use_background_screenshot=False):
+            if auto.matched_text == "bilibili游戏隐私政策提示":
+                auto.click_element("同意", "text", take_screenshot=False)
+            elif auto.matched_text == "登录记录":
+                auto.click_element("登录", "text", take_screenshot=False)
+        else:
+            auto.click_element("./assets/images/screen/bilibili_login.png", "image", 0.9, take_screenshot=False)
+            auto.click_element("./assets/images/screen/bilibili_login_2.png", "image", 0.9, take_screenshot=False)
+            auto.click_element("./assets/images/screen/bilibili_login_3.png", "image", 0.9, take_screenshot=False)
+            auto.click_element("./assets/images/screen/bilibili_agree_update.png", "image", 0.9, take_screenshot=False)
+            auto.click_element("./assets/images/screen/bilibili_agree_update_2.png", "image", 0.9, take_screenshot=False)
+
         return False
 
     def cloud_game_check_and_enter():
+        def cloud_click_element(*args, **kwargs):
+            kwargs.setdefault("prefer_frame_screenshot", False)
+            return auto.click_element(*args, **kwargs)
+
         # 点击进入
-        if auto.click_element("./assets/images/screen/click_enter.png", "image", 0.9):
+        if cloud_click_element("./assets/images/screen/click_enter.png", "image", 0.9):
             return True
         # 同意浏览器授权
-        if auto.click_element("./assets/images/screen/cloud/agree_to_authorize.png", "image", 0.9, take_screenshot=False):
+        if cloud_click_element("./assets/images/screen/cloud/agree_to_authorize.png", "image", 0.9, take_screenshot=False):
             time.sleep(0.5)
-            auto.click_element("每次访问时都充许", "text", 0.9)
+            cloud_click_element("每次访问时都充许", "text", 0.9)
         # 是否保存网页地址，点击 x 关闭
-        auto.click_element("./assets/images/screen/cloud/close.png", "image", 0.9, take_screenshot=False)
+        cloud_click_element("./assets/images/screen/cloud/close.png", "image", 0.9, take_screenshot=False)
         # 是否将《云·星穹铁道》添加到桌面，需要点击“下次再说”
-        auto.click_element("./assets/images/screen/cloud/next_time.png", "image", 0.9, take_screenshot=False)
+        cloud_click_element("./assets/images/screen/cloud/next_time.png", "image", 0.9, take_screenshot=False)
         # 免责声明，需要点击“接受”
-        auto.click_element("./assets/images/screen/cloud/accept.png", "image", 0.9, take_screenshot=False)
+        cloud_click_element("./assets/images/screen/cloud/accept.png", "image", 0.9, take_screenshot=False)
         # 适配用户协议和隐私政策更新提示，需要点击“同意”
-        auto.click_element("./assets/images/screen/agree_update.png", "image", 0.9, take_screenshot=False)
+        cloud_click_element("./assets/images/screen/agree_update.png", "image", 0.9, take_screenshot=False)
         # 云游戏设置的引导，需要多次点击 “下一步”
-        if auto.click_element("下一步", "text", 0.9, include=True, take_screenshot=False):
+        if cloud_click_element("下一步", "text", 0.9, include=True, take_screenshot=False):
             time.sleep(0.5)
-            auto.click_element("下一步", "text", 0.9, include=True)
+            cloud_click_element("下一步", "text", 0.9, include=True)
             time.sleep(0.5)
-            auto.click_element("我知道了", "text", 0.9, include=True)
+            cloud_click_element("我知道了", "text", 0.9, include=True)
         # 由于浏览器语言原因，云游戏启动时可能会是默认英文，需要改成中文
-        if auto.click_element("Settings", "text", 0.9, take_screenshot=False):
+        if cloud_click_element("Settings", "text", 0.9, take_screenshot=False):
             time.sleep(0.5)
-            auto.click_element("English", "text", 0.9, crop=(1541.0 / 1920, 198.0 / 1080, 156.0 / 1920, 58.0 / 1080))
+            cloud_click_element("English", "text", 0.9, crop=(1541.0 / 1920, 198.0 / 1080, 156.0 / 1920, 58.0 / 1080))
             time.sleep(0.5)
-            auto.click_element("简体中文", "text", 0.9)
+            cloud_click_element("简体中文", "text", 0.9)
             time.sleep(0.5)
             auto.press_key("esc")
 
@@ -166,7 +186,7 @@ def start_game():
         if not cloud_game.is_in_game():
             if not cloud_game.enter_cloud_game():
                 raise Exception("进入云游戏失败")
-            # time.sleep(10)    #dont need to wait
+            time.sleep(10)
             if not wait_until(lambda: cloud_game_check_and_enter(), cfg.start_game_timeout * 60):
                 raise TimeoutError("查找并点击进入按钮超时")
             time.sleep(10)
@@ -244,11 +264,12 @@ def after_finish_is_loop():
         return wait_time
 
     if cfg.loop_mode == "power":
-        current_power = Power.get()
+        current_power = Power.get(use_supplement=False)
         if current_power >= cfg.power_limit:
             log.info(f"开拓力 >= {cfg.power_limit}")
             log.info("即将再次运行")
             log.hr("完成", 2)
+            notif.flush_batch()
             return
         else:
             get_game_controller().stop_game()
@@ -264,12 +285,13 @@ def after_finish_is_loop():
     if is_gui_started():
         msg = "通过图形界面启动，程序不支持循环模式，请使用日志界面的定时运行功能"
         log.error(msg)
-        notif.notify(content=msg, level=NotificationLevel.ERROR)
+        notif.flush_batch(extra_content=msg, level=NotificationLevel.ERROR)
         log.hr("完成", 2)
         sys.exit(0)
 
-    log.info(cfg.notify_template['ContinueTime'].format(time=future_time))
-    notif.notify(content=cfg.notify_template['ContinueTime'].format(time=future_time), level=NotificationLevel.ALL)
+    final_content = cfg.notify_template['ContinueTime'].format(time=future_time)
+    log.info(final_content)
+    notif.flush_batch(extra_content=final_content, level=NotificationLevel.ALL)
     log.hr("完成", 2)
     # 等待状态退出OCR避免内存占用
     ocr.exit_ocr()
@@ -427,12 +449,13 @@ def notify_after_finish_not_loop():
         wait_time_power_full = (300 - current_power) * 6 * 60
         return wait_time_power_full
 
-    current_power = Power.get()
+    current_power = Power.get(use_supplement=False)
 
     wait_time = get_wait_time(current_power)
     future_time = Date.calculate_future_time(wait_time)
-    log.info(cfg.notify_template['FullTime'].format(power=current_power, time=future_time))
-    notif.notify(content=cfg.notify_template['FullTime'].format(power=current_power, time=future_time), level=NotificationLevel.ALL)
+    final_content = cfg.notify_template['FullTime'].format(power=current_power, time=future_time)
+    log.info(final_content)
+    notif.flush_batch(extra_content=final_content, level=NotificationLevel.ALL)
 
 
 def ensure_IME_lang_en():

@@ -9,6 +9,7 @@ from utils.singleton import SingletonMeta
 # 环境变量值为 "true"/"1" 时为 True，"false"/"0" 时为 False
 _ENV_OVERRIDE_MAP = {
     "MARCH7TH_CLOUD_GAME_ENABLE": ("cloud_game_enable", lambda v: v.lower() in ("true", "1")),
+    "MARCH7TH_CLOUD_GAME_USE_PAID_TIME": ("cloud_game_use_paid_time", lambda v: v.lower() in ("true", "1")),
     "MARCH7TH_BROWSER_HEADLESS_ENABLE": ("browser_headless_enable", lambda v: v.lower() in ("true", "1")),
     "MARCH7TH_BROWSER_HEADLESS_RESTART_ON_NOT_LOGGED_IN": ("browser_headless_restart_on_not_logged_in", lambda v: v.lower() in ("true", "1")),
     "MARCH7TH_BROWSER_DOWNLOAD_USE_MIRROR": ("browser_download_use_mirror", lambda v: v.lower() in ("true", "1")),
@@ -54,7 +55,7 @@ class Config(metaclass=SingletonMeta):
             with open(version_path, 'r', encoding='utf-8') as file:
                 return file.read().strip()
         except FileNotFoundError:
-            sys.exit("版本文件未找到")
+            raise FileNotFoundError("版本文件未找到")
 
     def _update_config(self, config, new_config):
         """递归更新配置信息"""

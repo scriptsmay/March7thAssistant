@@ -3,6 +3,27 @@ import time
 
 
 class CdpInput(InputBase):
+    KEY_ALIAS_MAP = {
+        "escape": "esc",
+        "return": "enter",
+        "control": "ctrl",
+        "option": "alt",
+        "win": "windows",
+        "command": "windows",
+        "left shift": "shiftleft",
+        "right shift": "shiftright",
+        "left ctrl": "ctrlleft",
+        "right ctrl": "ctrlright",
+        "left control": "ctrlleft",
+        "right control": "ctrlright",
+        "left alt": "altleft",
+        "right alt": "altright",
+        "left win": "windowsleft",
+        "right win": "windowsright",
+        "left windows": "windowsleft",
+        "right windows": "windowsright",
+    }
+
     SPECIAL_KEY_MAP = {
         "esc": {"key": "Escape", "code": "Escape", "vk": 27},
         "enter": {"key": "Enter", "code": "Enter", "vk": 13},
@@ -10,6 +31,18 @@ class CdpInput(InputBase):
         "tab": {"key": "Tab", "code": "Tab", "vk": 9},
         "backspace": {"key": "Backspace", "code": "Backspace", "vk": 8},
         "delete": {"key": "Delete", "code": "Delete", "vk": 46},
+        "shift": {"key": "Shift", "code": "ShiftLeft", "vk": 16, "modifier": 8, "location": 1},
+        "shiftleft": {"key": "Shift", "code": "ShiftLeft", "vk": 16, "modifier": 8, "location": 1},
+        "shiftright": {"key": "Shift", "code": "ShiftRight", "vk": 16, "modifier": 8, "location": 2},
+        "ctrl": {"key": "Control", "code": "ControlLeft", "vk": 17, "modifier": 2, "location": 1},
+        "ctrlleft": {"key": "Control", "code": "ControlLeft", "vk": 17, "modifier": 2, "location": 1},
+        "ctrlright": {"key": "Control", "code": "ControlRight", "vk": 17, "modifier": 2, "location": 2},
+        "alt": {"key": "Alt", "code": "AltLeft", "vk": 18, "modifier": 1, "location": 1},
+        "altleft": {"key": "Alt", "code": "AltLeft", "vk": 18, "modifier": 1, "location": 1},
+        "altright": {"key": "Alt", "code": "AltRight", "vk": 18, "modifier": 1, "location": 2},
+        "windows": {"key": "Meta", "code": "MetaLeft", "vk": 91, "modifier": 4, "location": 1},
+        "windowsleft": {"key": "Meta", "code": "MetaLeft", "vk": 91, "modifier": 4, "location": 1},
+        "windowsright": {"key": "Meta", "code": "MetaRight", "vk": 92, "modifier": 4, "location": 2},
         "arrowup": {"key": "ArrowUp", "code": "ArrowUp", "vk": 38},
         "arrowdown": {"key": "ArrowDown", "code": "ArrowDown", "vk": 40},
         "arrowleft": {"key": "ArrowLeft", "code": "ArrowLeft", "vk": 37},
@@ -46,6 +79,7 @@ class CdpInput(InputBase):
         self.logger = logger
         self.last_x = 0
         self.last_y = 0
+        self.active_modifiers = 0
 
     def focus(self):
         """当鼠标移浏览器时，失去焦点时，键盘输入命令可能失效，这时候需要让浏览器判定鼠标还留在云游戏内"""
@@ -131,58 +165,99 @@ class CdpInput(InputBase):
             self.logger.error(f"鼠标滚轮出错：{e}")
 
     # ---------------- Keyboard ----------------
-    def press_key(self, key, wait_time=0.2):
-        self.focus()
-        k = key.lower()
+    def _normalize_key_name(self, key):
+        normalized = str(key or "").strip().lower()
+        return self.KEY_ALIAS_MAP.get(normalized, normalized)
+
+    def _get_key_payload(self, key, event_type=None):
+        k = self._normalize_key_name(key)
         if k in self.SPECIAL_KEY_MAP:
             info = self.SPECIAL_KEY_MAP[k]
         elif k in self.CHAR_KEY_MAP:
             info = self.CHAR_KEY_MAP[k]
         else:
-            self.logger.error(f"未知按键：{key}")
-            return
+            return None
+
+        modifier_bit = info.get("modifier", 0)
+        modifiers = self.active_modifiers
+        if event_type == "keyDown":
+            modifiers |= modifier_bit
+        elif event_type == "keyUp":
+            modifiers &= ~modifier_bit
 
         payload = {
             "key": info["key"],
             "code": info["code"],
             "windowsVirtualKeyCode": info["vk"],
             "nativeVirtualKeyCode": info["vk"],
-            "modifiers": 0,
+            "modifiers": modifiers,
             "text": ""
         }
+        if "location" in info:
+            payload["location"] = info["location"]
+        return payload
+
+    def _dispatch_key_event(self, key, event_type):
+        normalized_key = self._normalize_key_name(key)
+        payload = self._get_key_payload(normalized_key, event_type)
+        if payload is None:
+            return False
+
+        self.cloud_game.execute_cdp_cmd("Input.dispatchKeyEvent", {"type": event_type, **payload})
+        if event_type == "keyDown":
+            self.active_modifiers = payload["modifiers"]
+        elif event_type == "keyUp":
+            self.active_modifiers = payload["modifiers"]
+        return True
+
+    def press_key(self, key, wait_time=0.2):
+        self.focus()
+        if self._get_key_payload(key) is None:
+            self.logger.error(f"未知按键：{key}")
+            return
 
         try:
-            self.cloud_game.execute_cdp_cmd("Input.dispatchKeyEvent", {"type": "keyDown", **payload})
+            self._dispatch_key_event(key, "keyDown")
             time.sleep(wait_time)
-            self.cloud_game.execute_cdp_cmd("Input.dispatchKeyEvent", {"type": "keyUp", **payload})
+            self._dispatch_key_event(key, "keyUp")
             self.logger.debug(f"按键按下：{key}, 持续 {wait_time}s")
         except Exception as e:
             self.logger.error(f"按键 {key} 出错：{e}")
 
+    def press_key_down(self, key):
+        self.focus()
+        if self._get_key_payload(key) is None:
+            self.logger.error(f"未知按键：{key}")
+            return
+
+        try:
+            self._dispatch_key_event(key, "keyDown")
+            self.logger.debug(f"按键按下：{key}")
+        except Exception as e:
+            self.logger.error(f"按键按下 {key} 出错：{e}")
+
+    def press_key_up(self, key):
+        self.focus()
+        if self._get_key_payload(key) is None:
+            self.logger.error(f"未知按键：{key}")
+            return
+
+        try:
+            self._dispatch_key_event(key, "keyUp")
+            self.logger.debug(f"按键释放：{key}")
+        except Exception as e:
+            self.logger.error(f"按键释放 {key} 出错：{e}")
+
     def secretly_press_key(self, key, wait_time=0.2):
         self.focus()
-        k = key.lower()
-        if k in self.SPECIAL_KEY_MAP:
-            info = self.SPECIAL_KEY_MAP[k]
-        elif k in self.CHAR_KEY_MAP:
-            info = self.CHAR_KEY_MAP[k]
-        else:
+        if self._get_key_payload(key) is None:
             self.logger.error(f"未知按键")
             return
 
-        payload = {
-            "key": info["key"],
-            "code": info["code"],
-            "windowsVirtualKeyCode": info["vk"],
-            "nativeVirtualKeyCode": info["vk"],
-            "modifiers": 0,
-            "text": ""
-        }
-
         try:
-            self.cloud_game.execute_cdp_cmd("Input.dispatchKeyEvent", {"type": "keyDown", **payload})
+            self._dispatch_key_event(key, "keyDown")
             time.sleep(wait_time)
-            self.cloud_game.execute_cdp_cmd("Input.dispatchKeyEvent", {"type": "keyUp", **payload})
+            self._dispatch_key_event(key, "keyUp")
             self.logger.debug(f"按键按下, 持续 {wait_time}s")
         except Exception as e:
             self.logger.error(f"按键出错：{e}")

@@ -4,6 +4,7 @@ from module.screen import screen
 from utils.date import Date
 from tasks.daily.photo import Photo
 from tasks.weekly.currency_wars import CurrencyWars
+from tasks.weekly.divergent_universe import DivergentUniverse
 from tasks.daily.fight import Fight
 from tasks.weekly.universe import Universe
 import tasks.reward as reward
@@ -16,13 +17,14 @@ from tasks.daily.himekotry import HimekoTry
 from tasks.weekly.echoofwar import Echoofwar
 from tasks.daily.buildtarget import BuildTarget
 from tasks.daily.redemption import Redemption
+from tasks.daily.ember_exchange import EmberExchange
 from utils.color import red, green, yellow
 import datetime
 
 
 class Daily:
     @staticmethod
-    def start():
+    def prepare_daily(ignore_refresh=False):
         if cfg.reward_enable and cfg.reward_redemption_code_enable:
             Redemption.get()
 
@@ -32,7 +34,7 @@ class Daily:
 
         # 在日常任务中检查是否使用支援角色
         if cfg.daily_enable:
-            if Date.is_next_x_am(cfg.last_run_timestamp, cfg.refresh_hour):
+            if ignore_refresh or Date.is_next_x_am(cfg.last_run_timestamp, cfg.refresh_hour):
                 Daily.lookup()
             else:
                 log.info("每日实训尚未刷新")
@@ -41,29 +43,83 @@ class Daily:
 
         activity.start()
 
-        # 优先历战余响
-        if cfg.echo_of_war_enable:
-            if Date.is_next_mon_x_am(cfg.echo_of_war_timestamp, cfg.refresh_hour):
-                # 注意，这里并没有解决每天开始时间。也就是4点开始。按照真实时间进行执行
-                isoweekday = datetime.date.today().isoweekday()
-                if isoweekday >= cfg.echo_of_war_start_day_of_week:
-                    Echoofwar.start()
+        if cfg.power_enable:
+            # 优先历战余响
+            if cfg.echo_of_war_enable:
+                if ignore_refresh or Date.is_next_mon_x_am(cfg.echo_of_war_timestamp, cfg.refresh_hour):
+                    # 注意，这里并没有解决每天开始时间。也就是4点开始。按照真实时间进行执行
+                    isoweekday = datetime.date.today().isoweekday()
+                    if isoweekday >= cfg.echo_of_war_start_day_of_week:
+                        Echoofwar.start()
+                    else:
+                        log.info(f"历战余响设置周{cfg.echo_of_war_start_day_of_week}后开始执行，当前为周{isoweekday}, 跳过执行")
                 else:
-                    log.info(f"历战余响设置周{cfg.echo_of_war_start_day_of_week}后开始执行，当前为周{isoweekday}, 跳过执行")
+                    log.info("历战余响尚未刷新")
             else:
-                log.info("历战余响尚未刷新")
-        else:
-            log.info("历战余响未开启")
+                log.info("历战余响未开启")
 
-        Power.run()
+            Power.run()
+        else:
+            log.info("清体力未开启，跳过历战余响和清体力")
 
         if cfg.daily_enable:
-            if Date.is_next_x_am(cfg.last_run_timestamp, cfg.refresh_hour):
+            if ignore_refresh or Date.is_next_x_am(cfg.last_run_timestamp, cfg.refresh_hour):
                 Daily.run()
             else:
                 log.info("每日实训尚未刷新")
         else:
             log.info("每日实训未开启")
+
+    @staticmethod
+    def routine():
+        Daily.prepare_daily(ignore_refresh=True)
+        reward.start()
+
+    @staticmethod
+    def _run_scheduled_divergent_universe(divergent: DivergentUniverse):
+        target_count = int(cfg.universe_count)
+        cycle = "weekly" if cfg.universe_frequency == "weekly" else "daily"
+        cycle_label = "本周" if cycle == "weekly" else "今日"
+
+        if target_count <= 0:
+            log.info("差分宇宙固定次数为 0，跳过执行并记录本轮时间")
+            cfg.save_timestamp("universe_timestamp")
+            return
+
+        completed_count = DivergentUniverse.get_recorded_run_count(cycle)
+        if completed_count >= target_count:
+            log.info(f"差分宇宙固定次数（{cycle_label}）已完成 {completed_count}/{target_count}，跳过执行")
+            cfg.save_timestamp("universe_timestamp")
+            return
+
+        remaining_runs = target_count - completed_count
+        log.info(f"差分宇宙固定次数进度（{cycle_label}）：{completed_count}/{target_count}，继续运行剩余 {remaining_runs} 次")
+
+        for _ in range(remaining_runs):
+            if not divergent.start():
+                log.warning(f"差分宇宙本轮未完成，不计入固定次数，下次将从 {cycle_label} {completed_count}/{target_count} 继续")
+                return
+
+            completed_count = DivergentUniverse.get_recorded_run_count(cycle)
+            log.info(f"差分宇宙固定次数（{cycle_label}）已完成 {completed_count}/{target_count}")
+
+        cfg.save_timestamp("universe_timestamp")
+        log.info("差分宇宙固定次数已全部完成，记录本轮执行时间")
+
+    @staticmethod
+    def start():
+        Daily.prepare_daily()
+
+        if cfg.asset_manager_enable:
+            if cfg.asset_self_molding_resin_enable:
+                if Date.is_next_month_x_am(cfg.asset_self_molding_resin_timestamp, cfg.refresh_hour):
+                    Synthesis.self_molding_resin()
+                else:
+                    log.info("自塑尘脂自动合成尚未刷新")
+            else:
+                log.info("自塑尘脂自动合成未开启")
+
+            EmberExchange.start()
 
         if cfg.currencywars_enable:
             if Date.is_next_mon_x_am(cfg.currencywars_timestamp, cfg.refresh_hour):
@@ -76,6 +132,24 @@ class Daily:
         else:
             log.info("「货币战争」积分奖励未开启")
 
+        divergent = DivergentUniverse()
+        if cfg.weekly_divergent_enable:
+            if Date.is_next_mon_x_am(cfg.weekly_divergent_timestamp, cfg.refresh_hour):
+                screen.change_to("divergent_main")
+                for _ in range(3):
+                    if not divergent.check_divergent_universe_score():
+                        divergent.start()
+                        if not Date.is_next_mon_x_am(cfg.weekly_divergent_timestamp, cfg.refresh_hour):
+                            break
+                    else:
+                        break
+                else:
+                    log.warning("尝试运行了多轮差分宇宙，但积分奖励仍未完成，可能遇到未知问题，请检查日志")
+            else:
+                log.info("「差分宇宙」积分奖励尚未刷新")
+        else:
+            log.info("「差分宇宙」积分奖励未开启")
+
         if cfg.fight_enable:
             if Date.is_next_x_am(cfg.fight_timestamp, cfg.refresh_hour):
                 Fight.start()
@@ -84,21 +158,13 @@ class Daily:
         else:
             log.info("锄大地未开启")
 
-        if cfg.weekly_divergent_enable:
-            if Date.is_next_mon_x_am(cfg.weekly_divergent_timestamp, cfg.refresh_hour):
-                screen.change_to("divergent_main")
-                if not Universe.check_universe_score():
-                    if Universe.start(1, False, "divergent_weekly"):
-                        cfg.save_timestamp("weekly_divergent_timestamp")
-            else:
-                log.info("「差分宇宙」积分奖励尚未刷新")
-        else:
-            log.info("「差分宇宙」积分奖励未开启")
-
         if cfg.universe_frequency == "weekly":
             if Date.is_next_mon_x_am(cfg.universe_timestamp, cfg.refresh_hour):
                 if cfg.universe_enable:
-                    Universe.start()
+                    if cfg.universe_category == "divergent":
+                        Daily._run_scheduled_divergent_universe(divergent)
+                    else:
+                        Universe.start()
                 else:
                     log.info("模拟宇宙/差分宇宙未开启")
             else:
@@ -106,7 +172,10 @@ class Daily:
         elif cfg.universe_frequency == "daily":
             if Date.is_next_x_am(cfg.universe_timestamp, cfg.refresh_hour):
                 if cfg.universe_enable:
-                    Universe.start()
+                    if cfg.universe_category == "divergent":
+                        Daily._run_scheduled_divergent_universe(divergent)
+                    else:
+                        Universe.start()
                 else:
                     log.info("模拟宇宙/差分宇宙未开启")
             else:
@@ -166,7 +235,7 @@ class Daily:
         if len(cfg.daily_tasks) > 0:
             task_functions = {
                 "登录游戏": (lambda: True, 100),
-                "派遣委托或收取1次委托奖励": (lambda: False, 100),  # 没有实现但有可能已完成,只检测是否完成
+                "派遣委托或收取1次委托奖励": (lambda: reward.start_specific("dispatch"), 100),
                 "累计消耗120点开拓力": (lambda: False, 200),  # 没有实现但有可能已完成,只检测是否完成
                 "使用支援角色并获得战斗胜利1次": (lambda: False, 200),  # 没有实现但有可能已完成,只检测是否完成
                 "完成1次「拟造花萼（金）」": (lambda: False, 100),

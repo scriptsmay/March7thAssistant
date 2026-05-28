@@ -1,32 +1,109 @@
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QObject, QEvent, QPoint
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QWidget, QLabel, QFileDialog, QVBoxLayout, QStackedWidget, QSpacerItem, QScroller, QScrollerProperties
+from PySide6.QtWidgets import QWidget, QLabel, QFileDialog, QVBoxLayout, QStackedWidget, QSpacerItem, QScroller, QScrollerProperties, QScrollArea, QFrame, QApplication
 from qfluentwidgets import FluentIcon as FIF
-from qfluentwidgets import SettingCardGroup, PushSettingCard, ScrollArea, InfoBar, PrimaryPushSettingCard
+from qfluentwidgets import SettingCardGroup, PushSettingCard, ScrollArea, InfoBar, InfoBarPosition, PrimaryPushSettingCard, MessageBox
 from app.sub_interfaces.accounts_interface import accounts_interface
 from .common.style_sheet import StyleSheet
 from .components.pivot import SettingPivot
 from .card.comboboxsettingcard1 import ComboBoxSettingCard1
 from .card.comboboxsettingcard2 import ComboBoxSettingCard2, ComboBoxSettingCardUpdateSource, ComboBoxSettingCardLog, ComboBoxSettingCardLanguage
-from .card.switchsettingcard1 import SwitchSettingCard1, StartMarch7thAssistantSwitchSettingCard, SwitchSettingCardTeam, SwitchSettingCardImmersifier, SwitchSettingCardGardenofplenty, SwitchSettingCardEchoofwar, SwitchSettingCardHotkey, SwitchSettingCardCloudGameStatus
+from .card.switchsettingcard1 import SwitchSettingCard1, SwitchSettingCardWithAction, TimestampSwitchSettingCard, StartMarch7thAssistantSwitchSettingCard, SwitchSettingCardTeam, SwitchSettingCardImmersifier, SwitchSettingCardGardenofplenty, SwitchSettingCardEchoofwar, SwitchSettingCardHotkey, SwitchSettingCardCloudGameStatus
 from .card.rangesettingcard1 import RangeSettingCard1
-from .card.pushsettingcard1 import CustomPushSettingCard, PushSettingCardInstance, PushSettingCardInstanceChallengeCount, PushSettingCardNotifyTemplate, PushSettingCardMirrorchyan, PushSettingCardEval, PushSettingCardDate, PushSettingCardKey, PushSettingCardTeam, PushSettingCardFriends, PushSettingCardTeamWithSwap, PushSettingCardPowerPlan, InstanceTeamSettingCard
+from .card.pushsettingcard1 import CustomPushSettingCard, DualPushSettingCard, PushSettingCardAction, PushSettingCardInstance, PushSettingCardInstanceChallengeCount, PushSettingCardNotifyTemplate, PushSettingCardMirrorchyan, PushSettingCardStr, PushSettingCardEval, PushSettingCardDate, PushSettingCardKey, PushSettingCardTeam, PushSettingCardFriends, PushSettingCardTeamWithSwap, PushSettingCardPowerPlan, InstanceTeamSettingCard
 from .card.timepickersettingcard1 import TimePickerSettingCard1
-from .card.expandable_switch_setting_card import ExpandableSwitchSettingCard, ExpandableComboBoxSettingCardUpdateSource, ExpandablePushSettingCard, ExpandableComboBoxSettingCard, ExpandableComboBoxSettingCardInstanceType, ExpandableSwitchSettingCardEchoofwar
+from .card.expandable_switch_setting_card import ExpandableSwitchSettingCard, ExpandableTimestampSwitchSettingCard, ExpandableComboBoxSettingCardUpdateSource, ExpandableComboBoxSettingCard, ExpandableComboBoxSettingCardInstanceType, ExpandableSwitchSettingCardEchoofwar
 from .card.messagebox_custom import MessageBoxEdit
+from .card.stationprioritysettingcard import StationPrioritySettingCard
 from module.config import cfg
 from module.notification import init_notifiers
 from module.localization import tr
+from tasks.weekly.divergent_universe import DivergentUniverse
 from tasks.base.tasks import start_task
 from .tools.check_update import checkUpdate
 import os
 import sys
+import platform
+
+
+class _PivotScrollFilter(QObject):
+    """为 pivot 及其所有子控件（tab 按钮）提供横向拖拽滚动支持。
+
+    安装方式（在所有 addItem 完成后）：
+        self.pivot.installEventFilter(filter)
+        for child in self.pivot.findChildren(QWidget):
+            child.installEventFilter(filter)
+
+    拖拽后防止误切 tab 的机制：
+        进入拖拽模式后立即对 pivot 调用 grabMouse()，把后续所有鼠标事件
+        路由到 pivot 而非 tab 子控件。松开时 releaseMouse() 还原路由，
+        并对 pivot 发送 Leave 事件重置 hover 状态，完全杜绝误切 tab。
+    """
+    _DRAG_THRESHOLD = 5  # px；低于此值视为点击，不进入拖拽模式
+
+    def __init__(self, scroll_area: QScrollArea, pivot):
+        super().__init__(scroll_area)
+        self._sa = scroll_area
+        self._pivot = pivot
+        self._press_global: QPoint | None = None
+        self._drag_origin: int = 0
+        self._is_dragging: bool = False
+
+    def eventFilter(self, obj, event: QEvent) -> bool:
+        t = event.type()
+
+        # ── 滚轮 → 横向滚动（消费，不冒泡给外层纵向 ScrollArea）───────
+        if t == QEvent.Type.Wheel:
+            delta = event.angleDelta()
+            scroll = delta.x() if delta.x() != 0 else delta.y()
+            sb = self._sa.horizontalScrollBar()
+            sb.setValue(sb.value() - scroll // 3)
+            return True
+
+        # ── 按下 → 记录全局起点，放行（tab 正常 press/hover）────────────
+        if t == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._press_global = event.globalPosition().toPoint()
+            self._drag_origin = self._sa.horizontalScrollBar().value()
+            self._is_dragging = False
+            return False
+
+        # ── 移动 → 超阈值进入拖拽，grabMouse 接管后续事件 ───────────────
+        if t == QEvent.Type.MouseMove and (event.buttons() & Qt.MouseButton.LeftButton):
+            if self._press_global is not None:
+                dx = event.globalPosition().toPoint().x() - self._press_global.x()
+                if not self._is_dragging and abs(dx) > self._DRAG_THRESHOLD:
+                    self._is_dragging = True
+                    # grabMouse：把所有后续鼠标事件路由到 pivot，
+                    # 子控件（tab 按钮）不再收到 Release/Click，彻底防止误切 tab
+                    self._pivot.grabMouse(Qt.CursorShape.ClosedHandCursor)
+                if self._is_dragging:
+                    self._sa.horizontalScrollBar().setValue(self._drag_origin - dx)
+                    return True
+            return False
+
+        # ── 释放 → 拖拽：releaseMouse + 发送 Leave，清理状态 ────────────
+        if t == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            if self._press_global is not None:
+                was_dragging = self._is_dragging
+                self._press_global = None
+                self._is_dragging = False
+                if was_dragging:
+                    self._pivot.releaseMouse()
+                    # 发送 Leave 事件让 pivot 及子控件重置 hover 样式
+                    leave = QEvent(QEvent.Type.Leave)
+                    QApplication.sendEvent(self._pivot, leave)
+                    return True  # 消费 Release，不触发 tab 切换
+            return False
+
+        return False
 
 
 class SettingInterface(ScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
+        self._ignoreUniverseEnableCardSwitchChanged = False
+        self._ignoreCheckUpdateCardSwitchChanged = False
         self.scrollWidget = QWidget()
         self.vBoxLayout = QVBoxLayout(self.scrollWidget)
 
@@ -76,6 +153,18 @@ class SettingInterface(ScrollArea):
         self.scrollWidget.setObjectName('scrollWidget')
         self.settingLabel.setObjectName('settingLabel')
         StyleSheet.SETTING_INTERFACE.apply(self)
+
+        # ── 选项卡滚动容器 ──────────────────────────────────────────────
+        # 当标签文字较长（如英语）时允许横向滚动。滚动条隐藏，仅保留拖拽交互。
+        # 注意：不在此处安装 _PivotScrollFilter，因为 pivot 的 tab 子控件
+        # 尚未创建（addItem 在 __initLayout 中调用）。filter 在 __initLayout
+        # 最后通过 pivot.findChildren(QWidget) 递归安装，覆盖所有 tab 子控件。
+        self.pivotScrollArea = QScrollArea(self)
+        self.pivotScrollArea.setWidget(self.pivot)
+        self.pivotScrollArea.setWidgetResizable(False)
+        self.pivotScrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.pivotScrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.pivotScrollArea.setFrameShape(QFrame.Shape.NoFrame)
 
         QScroller.grabGesture(self.viewport(), QScroller.ScrollerGestureType.LeftMouseButtonGesture)
         scroller = QScroller.scroller(self.viewport())
@@ -130,6 +219,12 @@ class SettingInterface(ScrollArea):
             tr("清体力前传送至任意锚点"),
             "",
             "tp_before_instance"
+        )
+        self.powerEnableCard = SwitchSettingCard1(
+            FIF.POWER_BUTTON,
+            tr("启用清体力"),
+            tr("仅影响完整运行和“日常”中的历战余响与清体力，不影响单独执行“清体力”任务"),
+            "power_enable"
         )
         # self.instanceTeamNumberCard = ComboBoxSettingCard1(
         #     "instance_team_number",
@@ -199,12 +294,28 @@ class SettingInterface(ScrollArea):
             tr("启用培养目标"),
             tr("根据培养目标刷取行迹与遗器副本，如果无法获取培养目标则回退到默认的副本设置")
         )
+        self.buildTargetSchemeCard = ComboBoxSettingCard2(
+            "build_target_scheme",
+            FIF.SEARCH,
+            tr("识别方案"),
+            tr("副本名称识别会进入挑战页读取副本信息；掉落物识别根据列表中的掉落物匹配副本，异常时可尝试切换方案"),
+            texts={
+                tr("副本名称识别"): "instance",
+                tr("掉落物识别"): "drop"
+            }
+        )
         self.buildTargetPlanarOrnamentWeeklyCountCard = RangeSettingCard1(
             "build_target_ornament_weekly_count",
             [0, 7],
             FIF.CALENDAR,
             tr("每周饰品提取次数"),
             tr("目标有足够资源后，执行饰品提取的次数，其余时间执行侵蚀隧洞"),
+        )
+        self.buildTargetUseUserInstanceWhenOnlyErosionAndOrnamentCard = SwitchSettingCard1(
+            FIF.SYNC,
+            tr("仅识别到侵蚀隧洞/饰品提取时使用自定义副本"),
+            tr("开启后，当培养目标仅包含侵蚀隧洞和饰品提取时，清体力将改用你在体力设置中配置的副本"),
+            "build_target_use_user_instance_when_only_erosion_and_ornament"
         )
         self.echoofwarEnableCard = ExpandableSwitchSettingCardEchoofwar(
             "echo_of_war_enable",
@@ -245,10 +356,12 @@ class SettingInterface(ScrollArea):
         # )
 
         self.DailyGroup = SettingCardGroup(tr("日常设置"), self.scrollWidget)
-        self.dailyEnableCard = ExpandableSwitchSettingCard(
+        self.dailyEnableCard = ExpandableTimestampSwitchSettingCard(
             "daily_enable",
+            "last_run_timestamp",
             FIF.CALENDAR,
             tr("启用每日实训"),
+            tr("上次检测到完成日常的时间"),
             ""
         )
         self.dailyMaterialEnableCard = SwitchSettingCard1(
@@ -274,12 +387,6 @@ class SettingInterface(ScrollArea):
             FIF.FLAG,
             tr("回忆一队伍"),
             "daily_memory_one_team"
-        )
-        self.lastRunTimeCard = PushSettingCardDate(
-            tr('修改'),
-            FIF.DATE_TIME,
-            tr("上次检测到完成日常的时间"),
-            "last_run_timestamp"
         )
         self.activityEnableCard = ExpandableSwitchSettingCard(
             "activity_enable",
@@ -310,6 +417,12 @@ class SettingInterface(ScrollArea):
             tr('位面分裂'),
             tr("存在双倍次数时体力优先「饰品提取」"),
             "activity_planarfissure_enable"
+        )
+        self.activityJourneyHighlightsNotificationEnableCard = SwitchSettingCard1(
+            FIF.CALENDAR,
+            tr('活动热点通知'),
+            tr("每次运行时发送带有活动热点截图的通知"),
+            "activity_journey_highlights_notification_enable"
         )
         self.rewardEnableCard = ExpandableSwitchSettingCard(
             "reward_enable",
@@ -362,6 +475,14 @@ class SettingInterface(ScrollArea):
             "reward_redemption_code_enable"
         )
 
+        # 短信奖励开关
+        self.messageEnableCard = SwitchSettingCard1(
+            FIF.CHAT,
+            tr('短信'),
+            None,
+            "reward_message_enable"
+        )
+
         self.assetEnableCard = ExpandableSwitchSettingCard(
             "asset_manager_enable",
             FIF.LIBRARY,
@@ -375,19 +496,53 @@ class SettingInterface(ScrollArea):
             tr("自动将3星光锥进行叠加以节省背包空间"),
             "asset_lc3_star_superimpose_enable",
         )
+        self.selfMoldingResinEnableCard = TimestampSwitchSettingCard(
+            FIF.CALENDAR,
+            tr("启用「每月自动合成自塑尘脂」"),
+            tr("每月自动尝试合成 2 个自塑尘脂，成功后记录时间，并在每月 1 号刷新"),
+            "asset_self_molding_resin_enable",
+            "asset_self_molding_resin_timestamp",
+            tr("上次完成自塑尘脂合成的时间"),
+        )
+        self.emberSpecialPassEnableCard = TimestampSwitchSettingCard(
+            FIF.CALENDAR,
+            tr("启用「每月自动购买{}」").format(tr("星轨专票")),
+            tr("每月自动尝试在余烬兑换中购买「{}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(tr("星轨专票")),
+            "asset_ember_special_pass_enable",
+            "asset_ember_special_pass_timestamp",
+            tr("上次完成{}购买的时间").format(tr("星轨专票")),
+        )
+        self.emberRegularPassEnableCard = TimestampSwitchSettingCard(
+            FIF.CALENDAR,
+            tr("启用「每月自动购买{}」").format(tr("星轨通票")),
+            tr("每月自动尝试在余烬兑换中购买「{}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(tr("星轨通票")),
+            "asset_ember_regular_pass_enable",
+            "asset_ember_regular_pass_timestamp",
+            tr("上次完成{}购买的时间").format(tr("星轨通票")),
+        )
+        self.emberTracksOfDestinyEnableCard = TimestampSwitchSettingCard(
+            FIF.CALENDAR,
+            tr("启用「每月自动购买{}」").format(tr("命运的足迹")),
+            tr("每月自动尝试在余烬兑换中购买「{}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(tr("命运的足迹")),
+            "asset_ember_tracks_of_destiny_enable",
+            "asset_ember_tracks_of_destiny_timestamp",
+            tr("上次完成{}购买的时间").format(tr("命运的足迹")),
+        )
 
         self.CurrencywarsGroup = SettingCardGroup(tr("货币"), self.scrollWidget)
-        self.currencywarsEnableCard = ExpandableSwitchSettingCard(
-            "currencywars_enable",
+        self.currencywarsEnableCard = TimestampSwitchSettingCard(
             FIF.DICTIONARY,
             tr('启用「货币战争」积分奖励'),
-            ""
+            "",
+            "currencywars_enable",
+            "currencywars_timestamp",
+            tr("上次检测到完成货币战争积分奖励的时间")
         )
-        self.currencywarsRunTimeCard = PushSettingCardDate(
-            tr('修改'),
-            FIF.DATE_TIME,
-            tr("上次检测到完成货币战争积分奖励的时间"),
-            "currencywars_timestamp"
+        self.currencywarsPresetCard = DualPushSettingCard(
+            tr('提升晋升等级'),
+            tr('提升职级等级'),
+            FIF.SYNC,
+            tr('快捷配置')
         )
         self.currencywarsTypeCard = ComboBoxSettingCard2(
             "currencywars_type",
@@ -402,13 +557,48 @@ class SettingInterface(ScrollArea):
             tr("在领取积分奖励后自动执行位面饰品快速提取消耗深度沉浸器"),
             "currencywars_bonus_enable"
         )
+        self.currencywarsRankDifficultyCard = ComboBoxSettingCard2(
+            "currencywars_rank_difficulty",
+            FIF.HISTORY,
+            tr('职级难度'),
+            '',
+            texts={tr('最高职级'): 'highest', tr('当前职级'): 'current', tr('最低职级'): 'lowest'}
+        )
+        self.currencywarsStrategyCard = ExpandableComboBoxSettingCard(
+            "currencywars_strategy",
+            FIF.BOOK_SHELF,
+            tr('货币战争策略'),
+            tr('提升晋升等级，推荐在最低职级选择默认策略。提升职级等级，推荐在最高职级选择阿格莱雅或希儿策略。'),
+            {tr('默认'): 'default', tr('阿格莱雅'): 'aglaea', tr('希儿') + tr('【测试版】'): 'seele'}
+        )
+        self.currencywarsRemembranceTrailblazerNameCard = PushSettingCardStr(
+            tr('修改'),
+            FIF.EDIT,
+            tr('「开拓者•记忆」名称'),
+            "currencywars_remembrance_trailblazer_name",
+            empty_content=tr('未配置时，阿格莱雅/希儿策略将跳过该角色，需要填入自己游戏名称')
+        )
+        self.currencywarsStrategyRestartOnSpecialTagsCard = SwitchSettingCard1(
+            FIF.SYNC,
+            tr('遇到特定词条时接受重开'),
+            tr('根据所选策略，在遇到特定词条或词条组合时允许重开'),
+            "currencywars_strategy_restart_on_special_tags"
+        )
+        self.currencywarsFastModeCard = SwitchSettingCard1(
+            FIF.SPEED_HIGH,
+            tr('启用速通模式'),
+            tr("开启后，仅在首领节点尝试装备武器，只推荐在最低职级时开启"),
+            "currencywars_fast_mode"
+        )
 
-        self.UniverseGroup = SettingCardGroup(tr("模拟宇宙"), self.scrollWidget)
-        self.weeklyDivergentEnableCard = ExpandableSwitchSettingCard(
-            "weekly_divergent_enable",
-            FIF.VPN,
+        self.UniverseGroup = SettingCardGroup(tr("差分宇宙"), self.scrollWidget)
+        self.weeklyDivergentEnableCard = TimestampSwitchSettingCard(
+            FIF.DICTIONARY,
             tr('启用「差分宇宙」积分奖励'),
-            ""
+            "",
+            "weekly_divergent_enable",
+            "weekly_divergent_timestamp",
+            tr("上次检测到完成差分宇宙积分奖励的时间")
         )
         self.weeklyDivergentTypeCard = ComboBoxSettingCard2(
             "weekly_divergent_type",
@@ -417,12 +607,32 @@ class SettingInterface(ScrollArea):
             '',
             texts={tr('常规演算'): 'normal', tr('周期演算'): 'cycle'}
         )
-        self.weeklyDivergentRunTimeCard = PushSettingCardDate(
-            tr('修改'),
-            FIF.DATE_TIME,
-            tr("上次检测到完成差分宇宙积分奖励的时间"),
-            "weekly_divergent_timestamp"
+        self.weeklyDivergentLevelCard = ComboBoxSettingCard2(
+            "weekly_divergent_level",
+            FIF.HISTORY,
+            tr("难度等级"),
+            "",
+            texts={f"{tr('难度')} Ⅰ": 1, f"{tr('难度')} Ⅱ": 2, f"{tr('难度')} Ⅲ": 3, f"{tr('难度')} Ⅳ": 4, f"{tr('难度')} Ⅴ": 5, f"{tr('难度')} Ⅹ{tr('（星阶模式）')}": 6}
         )
+        self.weeklyDivergentBonusEnableCard = SwitchSettingCard1(
+            FIF.IOT,
+            tr('自动执行饰品提取'),
+            tr("在领取积分奖励后自动执行饰品提取消耗沉浸器"),
+            "weekly_divergent_bonus_enable"
+        )
+        self.weeklyDivergentStableModeCard = SwitchSettingCard1(
+            FIF.SPEED_OFF,
+            tr('启用低性能兼容模式'),
+            tr("建议仅在低性能设备开启，可以提高事件和随意门交互的成功率（云游戏强制使用此模式）"),
+            "weekly_divergent_stable_mode"
+        )
+
+        self.stationPriorityCard = StationPrioritySettingCard(
+            FIF.MENU,
+            tr('站点优先级'),
+            tr("自定义差分宇宙「选择下一站」的站点优先级"),
+        )
+
         self.universeEnableCard = ExpandableSwitchSettingCard(
             "universe_enable",
             FIF.VPN,
@@ -450,12 +660,6 @@ class SettingInterface(ScrollArea):
             '',
             texts={tr('常规演算'): 'normal', tr('周期演算'): 'cycle'}
         )
-        self.universeEnableGpuCard = SwitchSettingCard1(
-            FIF.COMMAND_PROMPT,
-            tr('启用差分宇宙 GPU 加速'),
-            tr('开启后可能提升运行速度，若出现错误、异常或不稳定，请关闭此选项'),
-            "universe_enable_gpu"
-        )
         self.universeTimeoutCard = RangeSettingCard1(
             "universe_timeout",
             [1, 24],
@@ -471,8 +675,8 @@ class SettingInterface(ScrollArea):
         )
         self.universeBonusEnableCard = SwitchSettingCard1(
             FIF.IOT,
-            tr('自动执行饰品提取/领取沉浸奖励'),
-            tr("类别为“差分宇宙”时，在领取积分奖励后自动执行饰品提取消耗沉浸器。类别为“模拟宇宙”时，自动领取沉浸奖励。"),
+            tr('自动领取模拟宇宙沉浸奖励'),
+            tr("类别为“模拟宇宙”时，自动领取沉浸奖励"),
             "universe_bonus_enable"
         )
         self.universeFrequencyCard = ComboBoxSettingCard2(
@@ -489,13 +693,20 @@ class SettingInterface(ScrollArea):
             tr("运行次数"),
             tr("注意中途停止不会计数，0 代表不指定，使用模拟宇宙原版逻辑"),
         )
-        self.divergentTeamTypeCard = ComboBoxSettingCard2(
-            "divergent_team_type",
-            FIF.FLAG,
-            tr('差分宇宙队伍类型'),
-            '',
-            texts={tr('追击'): '追击', tr('持续伤害 (DoT)'): 'dot', tr('终结技'): '终结技', tr('击破'): '击破', tr('盾反'): '盾反'}
+        self.divergentUniverseRunCountCard = PushSettingCardAction(
+            tr('重置次数'),
+            FIF.HISTORY,
+            tr('差分宇宙已完成次数'),
+            self.__getDivergentUniverseRunCountText,
+            self.__resetDivergentUniverseRunCount,
         )
+        # self.divergentTeamTypeCard = ComboBoxSettingCard2(
+        #     "divergent_team_type",
+        #     FIF.FLAG,
+        #     tr('差分宇宙队伍类型'),
+        #     '',
+        #     texts={tr('追击'): '追击', tr('持续伤害 (DoT)'): 'dot', tr('终结技'): '终结技', tr('击破'): '击破', tr('盾反'): '盾反'}
+        # )
         fates = {}
         fates = {}
         for a in [tr("不配置"), tr("存护"), tr("记忆"), tr("虚无"), tr("丰饶"), tr("巡猎"), tr("毁灭"), tr("欢愉"), tr("繁育"), tr("智识")]:
@@ -516,10 +727,12 @@ class SettingInterface(ScrollArea):
         )
 
         self.FightGroup = SettingCardGroup(tr("锄地"), self.scrollWidget)
-        self.fightEnableCard = ExpandableSwitchSettingCard(
+        self.fightEnableCard = ExpandableTimestampSwitchSettingCard(
             "fight_enable",
+            "fight_timestamp",
             FIF.BUS,
             tr('启用锄大地 (Fhoe-Rail)'),
+            tr("上次运行锄大地的时间"),
             ""
         )
         self.fightOperationModeCard = ComboBoxSettingCard2(
@@ -529,6 +742,13 @@ class SettingInterface(ScrollArea):
             '',
             texts={tr('集成'): 'exe', tr('源码'): 'source'}
         )
+        self.universeEnableGpuCard = SwitchSettingCard1(
+            FIF.COMMAND_PROMPT,
+            tr('启用模拟宇宙 GPU 加速'),
+            tr('开启后可能提升运行速度，若出现错误、异常或不稳定，请关闭此选项'),
+            "universe_enable_gpu"
+        )
+
         self.fightTimeoutCard = RangeSettingCard1(
             "fight_timeout",
             [1, 24],
@@ -550,18 +770,19 @@ class SettingInterface(ScrollArea):
         #     None,
         #     texts=['3', '4', '5', '6', '7']
         # )
-        self.FightRunTimeCard = PushSettingCardDate(
-            tr('修改'),
-            FIF.DATE_TIME,
-            tr("上次运行锄大地的时间"),
-            "fight_timestamp"
-        )
-        self.fightAllowMapBuyCard = ComboBoxSettingCard2(
-            "fight_allow_map_buy",
+        self.fightMapVersionCard = ComboBoxSettingCard2(
+            "fight_map_version",
             FIF.GLOBE,
-            tr('购买代币与过期邮包'),
+            tr('地图版本'),
             '',
-            texts={tr("不配置"): "不配置", tr("启用"): True, tr("停用"): False}
+            texts={tr("不配置"): "不配置", tr("默认（疾跑）"): "default", tr("黄泉专用"): "HuangQuan"}
+        )
+        self.fightMainMapCard = ComboBoxSettingCard2(
+            "fight_main_map",
+            FIF.GLOBE,
+            tr('优先星球'),
+            '',
+            texts={tr("不配置"): "0", tr("空间站"): "1", tr("雅利洛"): "2", tr("仙舟"): "3", tr("匹诺康尼"): "4", tr("翁法罗斯"): 5, tr("二相乐园"): 6}
         )
         self.fightAllowSnackBuyCard = ComboBoxSettingCard2(
             "fight_allow_snack_buy",
@@ -570,19 +791,21 @@ class SettingInterface(ScrollArea):
             '',
             texts={tr("不配置"): "不配置", tr("启用"): True, tr("停用"): False}
         )
-        self.fightMainMapCard = ComboBoxSettingCard2(
-            "fight_main_map",
+        self.fightAllowMapBuyCard = ComboBoxSettingCard2(
+            "fight_allow_map_buy",
             FIF.GLOBE,
-            tr('优先星球'),
+            tr('购买代币与过期邮包'),
             '',
-            texts={tr("不配置"): "0", tr("空间站"): "1", tr("雅利洛"): "2", tr("仙舟"): "3", tr("匹诺康尼"): "4", tr("翁法罗斯"): 5}
+            texts={tr("不配置"): "不配置", tr("启用"): True, tr("停用"): False}
         )
 
         self.ImmortalGameGroup = SettingCardGroup(tr("逐光捡金"), self.scrollWidget)
-        self.forgottenhallEnableCard = ExpandableSwitchSettingCard(
+        self.forgottenhallEnableCard = ExpandableTimestampSwitchSettingCard(
             "forgottenhall_enable",
+            "forgottenhall_timestamp",
             FIF.SPEED_HIGH,
             tr('启用混沌回忆'),
+            tr("上次运行混沌回忆的时间"),
             ""
         )
         self.forgottenhallLevelCard = PushSettingCardEval(
@@ -603,17 +826,12 @@ class SettingInterface(ScrollArea):
             "forgottenhall_team1",
             "forgottenhall_team2"
         )
-        self.forgottenhallRunTimeCard = PushSettingCardDate(
-            tr('修改'),
-            FIF.DATE_TIME,
-            tr("上次运行混沌回忆的时间"),
-            "forgottenhall_timestamp"
-        )
-
-        self.purefictionEnableCard = ExpandableSwitchSettingCard(
+        self.purefictionEnableCard = ExpandableTimestampSwitchSettingCard(
             "purefiction_enable",
+            "purefiction_timestamp",
             FIF.SPEED_HIGH,
             tr('启用虚构叙事'),
+            tr("上次运行虚构叙事的时间"),
             ""
         )
         self.purefictionLevelCard = PushSettingCardEval(
@@ -628,17 +846,12 @@ class SettingInterface(ScrollArea):
             "purefiction_team1",
             "purefiction_team2"
         )
-        self.purefictionRunTimeCard = PushSettingCardDate(
-            tr('修改'),
-            FIF.DATE_TIME,
-            tr("上次运行虚构叙事的时间"),
-            "purefiction_timestamp"
-        )
-
-        self.ApocalypticEnableCard = ExpandableSwitchSettingCard(
+        self.ApocalypticEnableCard = ExpandableTimestampSwitchSettingCard(
             "apocalyptic_enable",
+            "apocalyptic_timestamp",
             FIF.SPEED_HIGH,
             tr('启用末日幻影'),
+            tr("上次运行末日幻影的时间"),
             ""
         )
         self.ApocalypticLevelCard = PushSettingCardEval(
@@ -653,13 +866,6 @@ class SettingInterface(ScrollArea):
             "apocalyptic_team1",
             "apocalyptic_team2"
         )
-        self.ApocalypticRunTimeCard = PushSettingCardDate(
-            tr('修改'),
-            FIF.DATE_TIME,
-            tr("上次运行末日幻影的时间"),
-            "apocalyptic_timestamp"
-        )
-
         self.CloudGameGroup = SettingCardGroup(
             tr("云崩铁设置"),
             self.scrollWidget
@@ -675,6 +881,12 @@ class SettingInterface(ScrollArea):
             tr("全屏运行"),
             None,
             "cloud_game_fullscreen_enable"
+        )
+        self.cloudGameUsePaidTimeCard = SwitchSettingCard1(
+            FIF.SHOPPING_CART,
+            tr("使用付费时长"),
+            tr("打开后可在使用云游戏时使用付费时长免除排队"),
+            "cloud_game_use_paid_time"
         )
         self.cloudGameMaxQueueTimeCard = RangeSettingCard1(
             "cloud_game_max_queue_time",
@@ -772,7 +984,7 @@ class SettingInterface(ScrollArea):
         self.updateViaLauncherEnableCard = ExpandableSwitchSettingCard(
             "update_via_launcher",
             FIF.UPDATE,
-            tr('通过启动器更新游戏【测试版】'),
+            tr('通过启动器更新游戏'),
             ""
         )
         self.launcherPathCard = PushSettingCard(
@@ -865,13 +1077,26 @@ class SettingInterface(ScrollArea):
             tr('选择关闭窗口时的默认行为，也可以在关闭时由对话框询问'),
             texts={tr('询问'): 'ask', tr('最小化到托盘'): 'minimize', tr('关闭程序'): 'close'}
         )
+        self.windowMemoryCard = ComboBoxSettingCard2(
+            "window_memory",
+            FIF.LAYOUT,
+            tr('窗口记忆'),
+            tr('选择启动时恢复的窗口状态'),
+            texts={tr('记忆窗口大小'): 'size', tr('记忆窗口位置'): 'position', tr('记忆窗口大小和位置'): 'size_and_position', tr('都不记忆'): 'none'}
+        )
 
         self.NotifyGroup = SettingCardGroup(tr("消息推送"), self.scrollWidget)
-        self.testNotifyCard = ExpandablePushSettingCard(
-            tr("测试消息推送"),
+        self.notifyMasterEnableCard = ExpandableSwitchSettingCard(
+            "notification_enable",
             FIF.RINGER,
-            "",
-            tr("发送消息")
+            tr("启用消息推送"),
+            tr("消息推送总开关")
+        )
+        self.testNotifyCard = PrimaryPushSettingCard(
+            tr("发送消息"),
+            FIF.SEND,
+            tr("测试消息推送"),
+            ""
         )
         self.notifyLevelCard = ComboBoxSettingCard2(
             "notify_level",
@@ -879,6 +1104,18 @@ class SettingInterface(ScrollArea):
             tr('通知级别'),
             '',
             texts={tr('推送所有通知'): 'all', tr('仅推送错误通知'): 'error'}
+        )
+        self.notifyMergeCard = SwitchSettingCard1(
+            FIF.PASTE,
+            tr('通知合并'),
+            tr('开启后，完整运行结束时将所有通知合并为一条发送'),
+            "notify_merge"
+        )
+        self.notifyImageEnableCard = SwitchSettingCard1(
+            FIF.CAMERA,
+            tr('推送图片'),
+            tr('关闭后推送消息时不再发送截图'),
+            "notify_send_images"
         )
         self.notifyTemplateCard = PushSettingCardNotifyTemplate(
             tr('修改'),
@@ -904,6 +1141,7 @@ class SettingInterface(ScrollArea):
                     "userid": {"title": tr("用户/群组 ID"), "description": tr("接收通知的用户 ID 或群组 ID（以 - 开头）")},
                     "api_url": {"title": tr("自定义 API 地址"), "description": tr("可选参数，自定义 Telegram API 地址，例如 api.telegram.org")},
                     "proxies": {"title": tr("代理配置"), "description": tr("可选参数，例如 127.0.0.1:10808 或 socks5://127.0.0.1:1080，不填则使用系统 PAC 代理")},
+                    "thread_id": {"title": tr("话题 ID"), "description": tr("可选参数，开启 Topics 功能的群组需要填写对应的话题 ID")},
                 }
             },
             "matrix": {
@@ -949,7 +1187,8 @@ class SettingInterface(ScrollArea):
                     "icon": {"title": tr("图标地址"), "description": tr("可选参数，通知图标的 URL")},
                     "isarchive": {"title": tr("归档"), "description": tr("可选参数：1 归档，0 不归档")},
                     "sound": {"title": tr("提示音"), "description": tr("可选参数，自定义提示音名称")},
-                    "url": {"title": tr("服务地址"), "description": tr("可选参数，自定义 Bark 服务的 URL")},
+                    "url": {"title": tr("跳转链接"), "description": tr("可选参数，通知点击后跳转的 URL")},
+                    "base_url": {"title": tr("服务地址"), "description": tr("可选参数，自定义 Bark 服务的 URL")},
                     "copy": {"title": tr("复制内容"), "description": tr("可选参数，通知点击后复制内容")},
                     "autocopy": {"title": tr("自动复制"), "description": tr("可选参数，是否自动复制")},
                     "cipherkey": {"title": tr("加密密钥"), "description": tr("可选参数，推送加密密钥，需在 Bark APP 中配置相同的密钥")},
@@ -1038,6 +1277,7 @@ class SettingInterface(ScrollArea):
                     "corpsecret": {"title": tr("应用密钥")},
                     "agentid": {"title": tr("应用 AgentId")},
                     "touser": {"title": tr("接收用户"), "description": tr("可选参数，接收用户，@all 表示全员")},
+                    "base_url": {"title": tr("自定义 API 地址"), "description": tr("可选参数，自定义企业微信 API 地址，用于反向代理绕过可信 IP 限制")},
                 }
             },
             "gotify": {
@@ -1174,11 +1414,19 @@ class SettingInterface(ScrollArea):
             tr("游戏启动前通过修改注册表或本地存储开启自动战斗和二倍速，并在清体力、货币战争和逐光捡金场景中检测并保持自动战斗状态"),
             "auto_battle_detect_enable"
         )
-        self.ocrGpuAccelerationCard = SwitchSettingCard1(
+        self.ocrGpuAccelerationCard = ComboBoxSettingCard2(
+            "ocr_gpu_acceleration",
             FIF.SPEED_HIGH,
-            tr('启用 OCR GPU 加速'),
-            tr("使用 DirectML 加速 OCR 识别，若 GPU 负载高导致 OCR 过慢会自动关闭（仅 Windows 10 Build 18362 及以上支持）"),
-            "ocr_gpu_acceleration"
+            tr('OCR 加速模式'),
+            tr("设置 OCR 引擎与加速后端。自动模式会优先尝试 DirectML，若不可用则回退到 CPU 引擎。"),
+            texts={
+                tr('自动'): 'auto',
+                tr('GPU'): 'gpu',
+                tr('ONNXRuntime（DirectML）'): 'onnx_dml',
+                tr('CPU'): 'cpu',
+                tr('OpenVINO（CPU）'): 'openvino_cpu',
+                tr('ONNXRuntime（CPU）'): 'onnx_cpu',
+            }
         )
         self.autoSetResolutionEnableCard = SwitchSettingCard1(
             FIF.FULL_SCREEN,
@@ -1204,6 +1452,13 @@ class SettingInterface(ScrollArea):
                 tr('在用户登录时启动'),
                 tr("通过任务计划程序在开机后自动执行完整运行模式（可能还需要自行配置电脑无需输入密码自动登录）")
             )
+        if sys.platform == 'win32':
+            self.debugModeEnableCard = SwitchSettingCard1(
+                FIF.DEVELOPER_TOOLS,
+                tr('启用调试模式'),
+                tr("开启后会在屏幕上实时绘制检测范围框（透明悬浮窗），用于调试自动化识别效果。仅 Windows 生效。"),
+                "debug_mode_enable"
+            )
         self.hotkeyCard = SwitchSettingCardHotkey(
             FIF.SETTING,
             tr('修改按键'),
@@ -1217,23 +1472,29 @@ class SettingInterface(ScrollArea):
             tr('项目主页'),
             "https://github.com/moesnow/March7thAssistant"
         )
+        self.bilibiliCard = PrimaryPushSettingCard(
+            tr('立即前往'),
+            FIF.MOVIE,
+            tr('哔哩哔哩'),
+            tr('欢迎关注我们的B站账号，获取最新动态和教程')
+        )
         self.qqGroupCard = PrimaryPushSettingCard(
             tr('加入群聊'),
             FIF.EXPRESSIVE_INPUT_ENTRY,
             tr('QQ群'),
             ""
         )
-        self.feedbackCard = PrimaryPushSettingCard(
-            tr('提供反馈'),
-            FIF.FEEDBACK,
-            tr('提供反馈'),
-            tr('帮助我们改进 March7thAssistant')
-        )
+        # self.feedbackCard = PrimaryPushSettingCard(
+        #     tr('提供反馈'),
+        #     FIF.FEEDBACK,
+        #     tr('提供反馈'),
+        #     tr('帮助我们改进 March7thAssistant')
+        # )
         self.aboutCard = PrimaryPushSettingCard(
             tr('检查更新'),
             FIF.INFO,
             tr('关于'),
-            tr('当前版本：') + " " + cfg.version
+            tr('当前版本：') + " " + cfg.version + " | Python " + sys.version.split()[0] + " | " + platform.system() + " " + platform.machine()
         )
         self.updateSourceCard = ExpandableComboBoxSettingCardUpdateSource(
             "update_source",
@@ -1241,7 +1502,9 @@ class SettingInterface(ScrollArea):
             tr('更新源'),
             self.parent,
             "",
-            texts={tr('海外源'): 'GitHub', tr('Mirror 酱'): 'MirrorChyan'}
+            texts={tr('海外源'): 'GitHub', tr('Mirror 酱'): 'MirrorChyan'},
+            secondary_configname="update_prerelease_enable",
+            secondary_texts={tr('正式版'): False, tr('公测版'): True}
         )
         self.checkUpdateCard = SwitchSettingCard1(
             FIF.SYNC,
@@ -1249,17 +1512,18 @@ class SettingInterface(ScrollArea):
             "",
             "check_update"
         )
-        self.updatePrereleaseEnableCard = SwitchSettingCard1(
-            FIF.TRAIN,
-            tr('加入预览版更新渠道'),
-            "",
-            "update_prerelease_enable"
-        )
         self.updateFullEnableCard = SwitchSettingCard1(
             FIF.GLOBE,
             tr('更新时下载完整包'),
             tr("更新将包含依赖组件，建议保持开启。若关闭此选项，需自行手动更新依赖组件，可能会导致出现不可预期的错误。"),
             "update_full_enable"
+        )
+        self.updateDownloadProxyCard = PushSettingCardStr(
+            tr('修改'),
+            FIF.GLOBE,
+            tr("下载代理"),
+            "update_download_proxy",
+            empty_content=tr("留空则使用系统代理；支持 http:// 和 socks5://")
         )
         self.mirrorchyanCdkCard = PushSettingCardMirrorchyan(
             tr('修改'),
@@ -1271,19 +1535,41 @@ class SettingInterface(ScrollArea):
         self.languageCard = ComboBoxSettingCardLanguage(
             "ui_language",
             FIF.LANGUAGE,
-            '界面语言 / 界面語言 / 인터페이스 언어 / UI Language',
-            '需要重启程序生效 / 需要重啟程式生效 / 변경 사항을 적용하려면 재시작 필요 / Requires restart to take effect',
-            texts={'自动': 'auto', '简体中文': 'zh_CN', '繁體中文': 'zh_TW', '한국어': 'ko_KR', 'English': 'en_US'}
+            '界面语言 / 界面語言 / 日本語 / 인터페이스 언어 / UI Language',
+            '切换后即时生效 / 切換後即時生效 / 切り替え後すぐ適用 / 변경 즉시 적용 / Takes effect immediately',
+            texts={'自动': 'auto', '简体中文': 'zh_CN', '繁體中文': 'zh_TW', '日本語': 'ja_JP', '한국어': 'ko_KR', 'English': 'en_US'}
+        )
+        self.telemetryCard = SwitchSettingCardWithAction(
+            tr("查看说明"),
+            FIF.FEEDBACK,
+            tr("匿名使用数据收集"),
+            tr("帮助开发者了解程序使用情况，改进功能"),
+            "telemetry_enable"
         )
 
     def __initLayout(self):
         self.settingLabel.move(36, 30)
-        self.pivot.move(40, 80)
+        # pivot 位于 pivotScrollArea 内；x=40 与标题对齐，y=80 与原位置一致
+        # height=54：pivot ~46px + 8px 供 AsNeeded 滚动条偶尔占用，底边 y=134
+        # setViewportMargins(0, 140, ...) 保留 6px 间距，不影响内容区域
+        self.pivotScrollArea.move(40, 80)
+        self.pivotScrollArea.setFixedHeight(46)  # pivot 本身高度，无需为滚动条留空
+        # ── 关键修复：构造时必须给 scroll area 设置初始宽度 ──────────────
+        # self.width() 在 __init__ 期间为 0（QWidget 尚未布局），
+        # 但 self.parent 是已显示的 MainWindow，其宽度有效（≥960）。
+        # 若无法取到父宽度则回退到最小窗口宽度 960。
+        # resizeEvent 会在窗口缩放时持续更新该值。
+        try:
+            initial_w = self.parent.width() if self.parent and self.parent.width() > 0 else 960
+        except Exception:
+            initial_w = 960
+        self.pivotScrollArea.setFixedWidth(max(initial_w - 40, 400))
         # self.title_area.move(36, 80)
         # self.vBoxLayout.addWidget(self.pivot, 0, Qt.AlignTop)
         self.vBoxLayout.addWidget(self.stackedWidget, 0, Qt.AlignmentFlag.AlignTop)
         self.vBoxLayout.setContentsMargins(36, 0, 36, 0)
 
+        self.PowerGroup.addSettingCard(self.powerEnableCard)
         self.PowerGroup.addSettingCard(self.powerPlanCard)
         self.PowerGroup.addSettingCard(self.instanceTypeCard)
         # self.PowerGroup.addSettingCard(self.calyxGoldenPreferenceCard)
@@ -1308,7 +1594,9 @@ class SettingInterface(ScrollArea):
         # self.PowerGroup.addSettingCard(self.maxCalyxPerRoundNumOfAttempts)
         self.PowerGroup.addSettingCard(self.buildTargetEnableCard)
         self.buildTargetEnableCard.addSettingCards([
-            self.buildTargetPlanarOrnamentWeeklyCountCard
+            self.buildTargetSchemeCard,
+            self.buildTargetPlanarOrnamentWeeklyCountCard,
+            self.buildTargetUseUserInstanceWhenOnlyErosionAndOrnamentCard
         ])
         self.PowerGroup.addSettingCard(self.echoofwarEnableCard)
         self.echoofwarEnableCard.addSettingCards([
@@ -1324,15 +1612,15 @@ class SettingInterface(ScrollArea):
             self.dailyMaterialEnableCard,
             # self.dailyHimekoTryEnableCard,
             self.dailyMemoryOneEnableCard,
-            self.dailyMemoryOneTeamCard,
-            self.lastRunTimeCard
+            self.dailyMemoryOneTeamCard
         ])
         self.DailyGroup.addSettingCard(self.activityEnableCard)
         self.activityEnableCard.addSettingCards([
             self.activityDailyCheckInEnableCard,
             self.activityGardenOfPlentyEnableCard,
             self.activityRealmOfTheStrangeEnableCard,
-            self.activityPlanarFissureEnableCard
+            self.activityPlanarFissureEnableCard,
+            self.activityJourneyHighlightsNotificationEnableCard
         ])
         self.DailyGroup.addSettingCard(self.rewardEnableCard)
         self.rewardEnableCard.addSettingCards([
@@ -1342,74 +1630,84 @@ class SettingInterface(ScrollArea):
             self.questEnableCard,
             self.srpassEnableCard,
             self.redemptionEnableCard,
-            self.achievementEnableCard
+            self.achievementEnableCard,
+            self.messageEnableCard
         ])
         self.DailyGroup.addSettingCard(self.assetEnableCard)
         self.assetEnableCard.addSettingCards(
             [
+                self.selfMoldingResinEnableCard,
+                self.emberSpecialPassEnableCard,
+                self.emberRegularPassEnableCard,
+                self.emberTracksOfDestinyEnableCard,
                 self.lc3StarSuperimposeEnableCard,
             ]
         )
 
         self.CurrencywarsGroup.addSettingCard(self.currencywarsEnableCard)
-        self.currencywarsEnableCard.addSettingCards([
-            self.currencywarsRunTimeCard
-        ])
+        self.CurrencywarsGroup.addSettingCard(self.currencywarsPresetCard)
         self.CurrencywarsGroup.addSettingCard(self.currencywarsTypeCard)
         self.CurrencywarsGroup.addSettingCard(self.currencywarsBonusEnableCard)
+        self.CurrencywarsGroup.addSettingCard(self.currencywarsRankDifficultyCard)
+        self.CurrencywarsGroup.addSettingCard(self.currencywarsStrategyCard)
+        self.currencywarsStrategyCard.addSettingCards([
+            self.currencywarsRemembranceTrailblazerNameCard,
+            self.currencywarsStrategyRestartOnSpecialTagsCard,
+            self.currencywarsFastModeCard
+        ])
 
         self.UniverseGroup.addSettingCard(self.weeklyDivergentEnableCard)
-        self.weeklyDivergentEnableCard.addSettingCards([
-            self.weeklyDivergentTypeCard,
-            self.weeklyDivergentRunTimeCard
-        ])
+        self.UniverseGroup.addSettingCard(self.weeklyDivergentTypeCard)
+        self.UniverseGroup.addSettingCard(self.weeklyDivergentBonusEnableCard)
+        self.UniverseGroup.addSettingCard(self.weeklyDivergentLevelCard)
+        self.UniverseGroup.addSettingCard(self.stationPriorityCard)
+        self.UniverseGroup.addSettingCard(self.weeklyDivergentStableModeCard)
+
         self.UniverseGroup.addSettingCard(self.universeEnableCard)
         self.universeEnableCard.addSettingCards([
             self.universeCategoryCard,
             self.divergentTypeCard,
+            self.universeBonusEnableCard,
             self.universeFrequencyCard,
             self.universeCountCard,
+            self.divergentUniverseRunCountCard,
             self.universeFateCard,
             self.universeDifficultyCard,
             self.universeOperationModeCard,
+            self.universeEnableGpuCard,
             self.universeTimeoutCard,
             self.universeRunTimeCard,
         ])
-        self.UniverseGroup.addSettingCard(self.divergentTeamTypeCard)
-        self.UniverseGroup.addSettingCard(self.universeBonusEnableCard)
-        self.UniverseGroup.addSettingCard(self.universeEnableGpuCard)
+        # self.UniverseGroup.addSettingCard(self.divergentTeamTypeCard)
 
         self.FightGroup.addSettingCard(self.fightEnableCard)
         self.fightEnableCard.addSettingCards([
             self.fightOperationModeCard,
             self.fightTimeoutCard,
-            self.FightRunTimeCard,
         ])
         self.FightGroup.addSettingCard(self.fightTeamEnableCard)
         # self.FightGroup.addSettingCard(self.fightTeamNumberCard)
-        self.FightGroup.addSettingCard(self.fightAllowMapBuyCard)
-        self.FightGroup.addSettingCard(self.fightAllowSnackBuyCard)
+        self.FightGroup.addSettingCard(self.fightMapVersionCard)
         self.FightGroup.addSettingCard(self.fightMainMapCard)
+        self.FightGroup.addSettingCard(self.fightAllowSnackBuyCard)
+        self.FightGroup.addSettingCard(self.fightAllowMapBuyCard)
 
         self.ImmortalGameGroup.addSettingCard(self.forgottenhallEnableCard)
         self.forgottenhallEnableCard.addSettingCards([
             self.forgottenhallLevelCard,
-            self.forgottenhallTeamsCard,
-            self.forgottenhallRunTimeCard
+            self.forgottenhallTeamsCard
         ])
 
         self.ImmortalGameGroup.addSettingCard(self.purefictionEnableCard)
         self.purefictionEnableCard.addSettingCards([
             self.purefictionLevelCard,
-            self.purefictionTeamsCard,
-            self.purefictionRunTimeCard
+            self.purefictionTeamsCard
         ])
 
         self.ImmortalGameGroup.addSettingCard(self.ApocalypticEnableCard)
         self.ApocalypticEnableCard.addSettingCards([
             self.ApocalypticLevelCard,
-            self.ApocalypticTeamsCard,
-            self.ApocalypticRunTimeCard
+            self.ApocalypticTeamsCard
         ])
 
         self.CloudGameGroup.addSettingCard(self.cloudGameEnableCard)
@@ -1421,6 +1719,7 @@ class SettingInterface(ScrollArea):
             self.browserLaunchArgCard
         ])
         self.CloudGameGroup.addSettingCard(self.cloudGameFullScreenCard)
+        self.CloudGameGroup.addSettingCard(self.cloudGameUsePaidTimeCard)
         self.CloudGameGroup.addSettingCard(self.browserHeadlessCard)
         self.browserHeadlessCard.addSettingCards([self.browserHeadlessRestartCard])
         self.CloudGameGroup.addSettingCard(self.cloudGameMaxQueueTimeCard)
@@ -1453,10 +1752,14 @@ class SettingInterface(ScrollArea):
         ])
         self.ProgramGroup.addSettingCard(self.playAudioCard)
         self.ProgramGroup.addSettingCard(self.closeWindowActionCard)
+        self.ProgramGroup.addSettingCard(self.windowMemoryCard)
 
-        self.NotifyGroup.addSettingCard(self.testNotifyCard)
-        self.testNotifyCard.addSettingCards([
+        self.NotifyGroup.addSettingCard(self.notifyMasterEnableCard)
+        self.notifyMasterEnableCard.addSettingCards([
+            self.testNotifyCard,
             self.notifyLevelCard,
+            self.notifyMergeCard,
+            self.notifyImageEnableCard,
             self.notifyTemplateCard
         ])
         for value in self.notifyEnableGroup:
@@ -1469,20 +1772,23 @@ class SettingInterface(ScrollArea):
         self.MiscGroup.addSettingCard(self.useBackgroundScreenshotCard)
         if sys.platform == 'win32':
             self.MiscGroup.addSettingCard(self.StartMarch7thAssistantCard)
+            self.MiscGroup.addSettingCard(self.debugModeEnableCard)
         self.MiscGroup.addSettingCard(self.hotkeyCard)
 
         self.AboutGroup.addSettingCard(self.githubCard)
+        self.AboutGroup.addSettingCard(self.bilibiliCard)
         self.AboutGroup.addSettingCard(self.qqGroupCard)
-        self.AboutGroup.addSettingCard(self.feedbackCard)
+        # self.AboutGroup.addSettingCard(self.feedbackCard)
         self.AboutGroup.addSettingCard(self.aboutCard)
         self.AboutGroup.addSettingCard(self.updateSourceCard)
         self.updateSourceCard.addSettingCards([
             self.checkUpdateCard,
-            self.updatePrereleaseEnableCard,
-            self.updateFullEnableCard
+            self.updateFullEnableCard,
+            self.updateDownloadProxyCard
         ])
         self.AboutGroup.addSettingCard(self.mirrorchyanCdkCard)
         self.AboutGroup.addSettingCard(self.languageCard)
+        self.AboutGroup.addSettingCard(self.telemetryCard)
 
         if sys.platform != 'win32':
             self.gamePathCard.setHidden(True)
@@ -1496,11 +1802,10 @@ class SettingInterface(ScrollArea):
         # self.addSubInterface(self.BorrowGroup, 'BorrowInterface', '支援')
         self.addSubInterface(self.DailyGroup, 'DailyInterface', tr('日常'))
         self.addSubInterface(self.CurrencywarsGroup, 'CurrencywarsInterface', tr('货币战争'))
+        self.addSubInterface(self.UniverseGroup, 'UniverseInterface', tr('差分宇宙'))
         if sys.platform == 'win32':
-            self.addSubInterface(self.UniverseGroup, 'UniverseInterface', tr('差分宇宙'))
             self.addSubInterface(self.FightGroup, 'FightInterface', tr('锄大地'))
         else:
-            self.UniverseGroup.setHidden(True)
             self.FightGroup.setHidden(True)
         self.addSubInterface(self.ImmortalGameGroup, 'ImmortalGameInterface', tr('逐光捡金'))
 
@@ -1526,47 +1831,139 @@ class SettingInterface(ScrollArea):
         self.pivot.setCurrentItem(self.stackedWidget.currentWidget().objectName())
         self.stackedWidget.setFixedHeight(self.stackedWidget.currentWidget().sizeHint().height())
 
+        # ── pivot 尺寸与滚动过滤器 ────────────────────────────────────
+        # 所有 addItem 调用完成后 pivot 才能计算正确宽度
+        self.pivot.adjustSize()
+        # 将滚动/拖拽过滤器安装到 pivot 本身及其所有子控件（tab 按钮）
+        # 只在 viewport 上安装不够：tab 子控件直接收到鼠标事件，不经过 viewport
+        self._pivot_scroll_filter = _PivotScrollFilter(self.pivotScrollArea, self.pivot)
+        self.pivot.installEventFilter(self._pivot_scroll_filter)
+        for child in self.pivot.findChildren(QWidget):
+            child.installEventFilter(self._pivot_scroll_filter)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # 随窗口宽度同步 pivot 滚动容器宽度（right margin = 40px 与布局对齐）
+        if self.width() > 0:
+            self.pivotScrollArea.setFixedWidth(max(self.width() - 40, 400))
+
     def __connectSignalToSlot(self):
+        def connect_expand_state(card):
+            if hasattr(card, "expandStateChanged"):
+                card.expandStateChanged.connect(self.__onExpandableCardStateChanged)
+
         # self.importConfigCard.clicked.connect(self.__onImportConfigCardClicked)
         self.gamePathCard.clicked.connect(self.__onGamePathCardClicked)
         self.launcherPathCard.clicked.connect(self.__onLauncherPathCardClicked)
         self.ScriptPathCard.clicked.connect(self.__onScriptPathCardClicked)
+        self.currencywarsPresetCard.leftClicked.connect(self.__applyCurrencywarsPromotionPreset)
+        self.currencywarsPresetCard.rightClicked.connect(self.__applyCurrencywarsRankPreset)
         # self.borrowCharacterInfoCard.clicked.connect(self.__openCharacterFolder())
 
         self.testNotifyCard.clicked.connect(lambda: start_task("notify"))
+        self.notifyMasterEnableCard.switchChanged.connect(self.__refreshNotifiers)
 
-        self.afterFinishCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
+        connect_expand_state(self.afterFinishCard)
 
         self.githubCard.clicked.connect(self.__openUrl("https://github.com/moesnow/March7thAssistant"))
         self.qqGroupCard.clicked.connect(self.__openUrl("https://qm.qq.com/q/C3IryUWCQw"))
-        self.feedbackCard.clicked.connect(self.__openUrl("https://github.com/moesnow/March7thAssistant/issues"))
+        # self.feedbackCard.clicked.connect(self.__openUrl("https://github.com/moesnow/March7thAssistant/issues"))
+        self.bilibiliCard.clicked.connect(self.__openUrl("https://space.bilibili.com/3706960664857075"))
 
         self.aboutCard.clicked.connect(lambda: checkUpdate(self.parent))
+        self.telemetryCard.actionClicked.connect(self.__showTelemetryInfo)
 
         # 连接可展开卡片的展开状态改变信号，在动画前调整 stackedWidget 高度
-        self.borrowEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.buildTargetEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.dailyEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.activityEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.rewardEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.assetEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.currencywarsEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.fightEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.weeklyDivergentEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.universeEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.forgottenhallEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.purefictionEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.ApocalypticEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.updateViaLauncherEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.updateSourceCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.testNotifyCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
+        connect_expand_state(self.borrowEnableCard)
+        connect_expand_state(self.buildTargetEnableCard)
+        connect_expand_state(self.dailyEnableCard)
+        connect_expand_state(self.activityEnableCard)
+        connect_expand_state(self.rewardEnableCard)
+        connect_expand_state(self.assetEnableCard)
+        connect_expand_state(self.currencywarsEnableCard)
+        connect_expand_state(self.currencywarsStrategyCard)
+        connect_expand_state(self.fightEnableCard)
+        connect_expand_state(self.weeklyDivergentEnableCard)
+        connect_expand_state(self.universeEnableCard)
+        connect_expand_state(self.forgottenhallEnableCard)
+        connect_expand_state(self.purefictionEnableCard)
+        connect_expand_state(self.ApocalypticEnableCard)
+        connect_expand_state(self.updateViaLauncherEnableCard)
+        connect_expand_state(self.updateSourceCard)
+        connect_expand_state(self.notifyMasterEnableCard)
         for notify_card in self.notifyEnableGroup:
-            if hasattr(notify_card, "expandStateChanged"):
-                notify_card.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.instanceTypeCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.echoofwarEnableCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.browserTypeCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
-        self.browserHeadlessCard.expandStateChanged.connect(self.__onExpandableCardStateChanged)
+            connect_expand_state(notify_card)
+        connect_expand_state(self.instanceTypeCard)
+        connect_expand_state(self.echoofwarEnableCard)
+        connect_expand_state(self.browserTypeCard)
+        connect_expand_state(self.browserHeadlessCard)
+        self.universeEnableCard.switchChanged.connect(self.__onUniverseEnableCardSwitchChanged)
+        self.checkUpdateCard.switchButton.checkedChanged.connect(self.__onCheckUpdateCardSwitchChanged)
+
+    def __onUniverseEnableCardSwitchChanged(self, isChecked: bool):
+        if self._ignoreUniverseEnableCardSwitchChanged:
+            self._ignoreUniverseEnableCardSwitchChanged = False
+            return
+
+        if not isChecked:
+            return
+
+        confirm = MessageBox(
+            tr("启用前请确认用途"),
+            tr("此选项及其子选项用于配置反复刷取遗器经验和灵之珠泪，直到达到每周上限。\n默认运行次数为每周 34 次。\n请确认你已经清楚了解这个功能的作用，并确保知道自己在做什么后再开启。"),
+            self.window()
+        )
+        confirm.yesButton.setText(tr("我已了解，继续开启"))
+        confirm.cancelButton.setText(tr("取消"))
+
+        if confirm.exec():
+            return
+
+        self._ignoreUniverseEnableCardSwitchChanged = True
+        self.universeEnableCard.switchButton.setChecked(False)
+
+    def __onCheckUpdateCardSwitchChanged(self, isChecked: bool):
+        if self._ignoreCheckUpdateCardSwitchChanged:
+            self._ignoreCheckUpdateCardSwitchChanged = False
+            return
+
+        if isChecked:
+            return
+
+        confirm = MessageBox(
+            tr("关闭更新检测前请确认"),
+            tr("仍然建议保留“启动时检测更新”。\n\n它不会在后台偷偷自动更新软件。开启后，仅会在你手动启动软件时检查一次更新，并在发现新版本后提醒你，不会自行安装，也不会影响循环运行。\n\n这类基于图像识别的工具对游戏界面变化非常敏感。游戏更新后，界面、按钮或布局只要发生变化，旧版本就更容易出现识别失败、流程异常等问题。\n\n很多看似“突然不能用了”的情况，本质上都是版本过旧导致的。若你已经了解这些影响，再继续关闭更新检测。"),
+            self.window()
+        )
+        confirm.yesButton.setText(tr("我已了解，继续关闭"))
+        confirm.cancelButton.setText(tr("取消"))
+
+        if confirm.exec():
+            return
+
+        self._ignoreCheckUpdateCardSwitchChanged = True
+        self.checkUpdateCard.switchButton.setChecked(True)
+
+    def __getDivergentUniverseRunCountText(self):
+        daily_count = DivergentUniverse.get_recorded_run_count("daily")
+        weekly_count = DivergentUniverse.get_recorded_run_count("weekly")
+        return "，".join([
+            tr("今日已完成 {} 次").format(daily_count),
+            tr("本周已完成 {} 次").format(weekly_count),
+        ])
+
+    def __showTelemetryInfo(self):
+        message = MessageBox(
+            tr("匿名使用数据收集说明"),
+            tr("我们只收集用于改进稳定性、兼容性和功能体验的匿名统计信息，不用于识别你的真实身份，也不会用于广告、画像或与第三方共享。\n\n不会上传账号、密码、截图、游戏画面、文件内容或原始错误文本。错误相关信息会在本地处理后，仅以上报错误类型或匿名指纹的形式发送。\n\n当前可能收集的内容包括：程序版本、系统类型、界面语言、OCR 模式、部分功能开关与通知偏好配置快照、任务执行结果，以及匿名化后的错误信息。\n\n这些数据仅用于分析功能使用情况、发现兼容性问题、评估版本稳定性和排查共性故障。"),
+            self.window()
+        )
+        message.cancelButton.hide()
+        message.yesButton.setText(tr("确认"))
+        message.exec()
+
+    def __resetDivergentUniverseRunCount(self):
+        DivergentUniverse.reset_recorded_run_count()
 
     def __getNotifyProviderNames(self):
         provider_names = []
@@ -1745,6 +2142,57 @@ class SettingInterface(ScrollArea):
             return
         cfg.set_value("script_path", script_path)
         self.ScriptPathCard.setContent(script_path)
+
+    def __setComboBoxCardValue(self, card, value):
+        for index in range(card.comboBox.count()):
+            if card.comboBox.itemData(index) != value:
+                continue
+
+            if card.comboBox.currentIndex() != index:
+                card.comboBox.setCurrentIndex(index)
+            else:
+                cfg.set_value(card.configname, value)
+            return
+
+        cfg.set_value(card.configname, value)
+
+    def __setSwitchCardValue(self, card, value):
+        if card.switchButton.isChecked() != value:
+            card.switchButton.setChecked(value)
+            return
+
+        card.setValue(value)
+        cfg.set_value(card.configname, value)
+
+    def __applyCurrencywarsPromotionPreset(self):
+        self.__setComboBoxCardValue(self.currencywarsTypeCard, 'overclock')
+        self.__setComboBoxCardValue(self.currencywarsRankDifficultyCard, 'lowest')
+        self.__setComboBoxCardValue(self.currencywarsStrategyCard, 'default')
+        self.__setSwitchCardValue(self.currencywarsFastModeCard, True)
+        InfoBar.success(
+            title=tr('已应用快捷配置'),
+            content=tr('当前为“提升晋升等级”模式'),
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=2000,
+            parent=self
+        )
+
+    def __applyCurrencywarsRankPreset(self):
+        self.__setComboBoxCardValue(self.currencywarsTypeCard, 'normal')
+        self.__setComboBoxCardValue(self.currencywarsRankDifficultyCard, 'highest')
+        self.__setComboBoxCardValue(self.currencywarsStrategyCard, 'aglaea')
+        self.__setSwitchCardValue(self.currencywarsFastModeCard, False)
+        InfoBar.success(
+            title=tr('已应用快捷配置'),
+            content=tr('当前为“提升职级等级”模式'),
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=2000,
+            parent=self
+        )
 
     def __onExpandableCardStateChanged(self, is_expanding: bool):
         """可展开卡片状态改变时，调整 stackedWidget 高度以包含子卡片"""

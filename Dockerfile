@@ -1,4 +1,6 @@
-FROM python:3.13.11-slim-trixie
+# 使用 3.13 而非 3.14，因为 openvino 尚未提供 3.14 的 wheels
+# 等待 https://github.com/openvinotoolkit/openvino/issues/34802 解决后再升级
+FROM python:3.13.13-slim-bookworm
 
 # ======================
 # Build args (architecture)
@@ -17,6 +19,7 @@ ENV PYTHONUNBUFFERED=1
 # Virtualenv
 # ======================
 ENV VIRTUAL_ENV="/opt/venv"
+ENV UV_PROJECT_ENVIRONMENT=$VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # ======================
@@ -39,7 +42,7 @@ ENV MARCH7TH_DOCKER_STARTED=true
 
 WORKDIR /m7a
 
-COPY requirements-docker.txt ./
+COPY pyproject.toml uv.lock ./
 
 # ======================
 # System dependencies
@@ -85,11 +88,10 @@ RUN \
 # ======================
 # Python deps
 # ======================
-RUN python -m venv $VIRTUAL_ENV \
-    && pip install --no-cache-dir \
+COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /bin/
+RUN uv sync --only-group docker
     # 如果需要使用国内源，可以取消下面一行的注释
-    # -i https://mirrors.cloud.tencent.com/pypi/simple/ \
-    -r requirements-docker.txt
+    # RUN uv sync --only-group docker --index-url https://mirrors.cloud.tencent.com/pypi/simple/
 
 COPY build.py ./
 

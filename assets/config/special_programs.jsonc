@@ -1,15 +1,15 @@
 {
     "special_programs": [
-        // {
-        //     "key": "bettergi",
-        //     "display_name": "原神 BetterGI",
-        //     "short_name": "原神",
-        //     "executable": "BetterGI.exe",
-        //     "default_args": "startOneDragon",
-        //     "kill_processes": [
-        //         "YuanShen.exe"
-        //     ]
-        // },
+        {
+            "key": "bettergi",
+            "display_name": "原神 BetterGI",
+            "short_name": "原神",
+            "executable": "BetterGI.exe",
+            "default_args": "startOneDragon",
+            "kill_processes": [
+                "YuanShen.exe"
+            ]
+        },
         {
             "key": "zzz_onedragon",
             "display_name": "绝区零 一条龙",
@@ -29,6 +29,24 @@
             "kill_processes": [
                 "Client-Win64-Shipping.exe"
             ]
+        },
+        {
+            "key": "maaend",
+            "display_name": "终末地 MaaEnd",
+            "short_name": "终末地",
+            "executable": "MaaEnd.exe",
+            "default_args": "",
+            "kill_processes": [
+                "Endfield.exe"
+            ]
+        },
+        {
+            "key": "m9a",
+            "display_name": "重返未来 M9A",
+            "short_name": "1999",
+            "executable": "M9A.exe",
+            "default_args": "",
+            "kill_processes": []
         },
         {
             "key": "mfaavalonia",

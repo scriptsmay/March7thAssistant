@@ -179,11 +179,11 @@ pyrightconfig.json
 .vscode
 
 # Test
-/tests
 /test.py
 
 # March7thAssistant
 /*config.yaml
+/config
 /warp.json
 /logs
 /screenshots

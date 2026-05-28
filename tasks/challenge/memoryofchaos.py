@@ -201,25 +201,7 @@ class MemoryOfChaos(BaseChallenge):
                     return True
             elif self.auto_battle_detect_enable and auto.find_element("./assets/images/share/base/not_auto.png", "image", 0.9, crop=(0.0 / 1920, 903.0 / 1080, 144.0 / 1920, 120.0 / 1080)):
                 log.info("尝试开启自动战斗")
-                auto.press_key("v")
-
-            # 判断是否有角色无法战斗
-            try:
-                crop_list = [
-                    (253.0 / 1920, 935.0 / 1080, 100.0 / 1920, 50.0 / 1080),
-                    (475.0 / 1920, 937.0 / 1080, 104.0 / 1920, 44.0 / 1080),
-                    (707.0 / 1920, 937.0 / 1080, 94.0 / 1920, 48.0 / 1080),
-                    (931.0 / 1920, 939.0 / 1080, 94.0 / 1920, 50.0 / 1080)
-                ]
-                for crop in crop_list:
-                    text = auto.get_single_line_text(crop=crop)
-                    # 角色无法战斗
-                    if text == '0':
-                        log.info("检测到角色无法战斗")
-                        auto.press_key("esc")
-                        break
-            except Exception as e:
-                log.error(f"角色无法战斗检测失败: {e}")
+                auto.press_key(cfg.get_value("hotkey_auto_battle", "v"))
 
             time.sleep(2)
 

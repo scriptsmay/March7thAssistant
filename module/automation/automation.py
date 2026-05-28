@@ -1,15 +1,19 @@
+import sys
 import time
 import math
 import cv2
 import numpy as np
+from PIL import Image
 
 from .screenshot import Screenshot
+from .debug_overlay import get_debug_overlay, DebugOverlay
 from utils.logger.logger import Logger
 from typing import Optional
 from utils.singleton import SingletonMeta
 from utils.image_utils import ImageUtils
 from module.game import get_game_controller
 from module.ocr import ocr
+from module.config import cfg
 
 
 class Automation(metaclass=SingletonMeta):
@@ -27,6 +31,8 @@ class Automation(metaclass=SingletonMeta):
         self.screenshot = None
         self._init_input()
         self.img_cache = {}
+        self._debug_overlay = None
+        self._debug_initialized = False
 
     def _init_input(self):
         """
@@ -39,9 +45,96 @@ class Automation(metaclass=SingletonMeta):
         self.mouse_move = self.input_handler.mouse_move
         self.mouse_scroll = self.input_handler.mouse_scroll
         self.press_key = self.input_handler.press_key
+        self.press_key_down = self.input_handler.press_key_down
+        self.press_key_up = self.input_handler.press_key_up
         self.secretly_press_key = self.input_handler.secretly_press_key
         self.press_mouse = self.input_handler.press_mouse
         self.secretly_write = self.input_handler.secretly_write
+
+    def _is_debug_enabled(self):
+        """检查调试模式是否启用。"""
+        if sys.platform != 'win32':
+            return False
+        if not bool(cfg.get_value('debug_mode_enable', False)):
+            return False
+        # 云游戏无窗口模式下没有可见画面，无需显示叠加层
+        if cfg.get_value('cloud_game_enable', False) and cfg.get_value('browser_headless_enable', False):
+            return False
+        return True
+
+    def _ensure_debug_overlay(self):
+        """确保调试叠加层已初始化并显示。"""
+        if not self._is_debug_enabled():
+            return
+        if not self._debug_initialized:
+            self._debug_overlay = get_debug_overlay()
+            self._debug_overlay.show_overlay()
+            self._debug_initialized = True
+
+    def _debug_clear(self):
+        """清除调试叠加层上的所有矩形框。"""
+        if not self._debug_initialized or self._debug_overlay is None:
+            return
+        self._debug_overlay.clear_rects()
+
+    def _debug_draw_rect(self, top_left, bottom_right, color=None, label=None):
+        """在调试叠加层上绘制一个矩形框。
+
+        :param top_left: 左上角坐标 (x, y)。
+        :param bottom_right: 右下角坐标 (x, y)。
+        :param color: QColor 颜色，默认绿色。
+        :param label: 可选标签文字。
+        """
+        if not self._debug_initialized or self._debug_overlay is None:
+            return
+        if top_left is None or bottom_right is None:
+            return
+        self._ensure_debug_overlay()
+        # 如果标签是图片路径，只取文件名
+        if label and isinstance(label, str) and ('/' in label or '\\' in label):
+            import os
+            label = os.path.basename(label)
+        self._debug_overlay.add_rect(
+            top_left[0], top_left[1],
+            bottom_right[0], bottom_right[1],
+            color=color,
+            label=label,
+        )
+
+    def _debug_draw_crop_region(self, crop):
+        """在调试叠加层上高亮显示截图裁剪区域。"""
+        if not self._debug_initialized or self._debug_overlay is None:
+            return
+        if self.screenshot_pos is None:
+            return
+        # screenshot_pos 格式: (abs_left, abs_top, scaled_width, scaled_height)
+        # 其中 scaled_width/height 已乘以 screenshot_scale_factor，高分辨率下被缩小
+        # 绘制时需要还原为屏幕实际像素尺寸
+        if self.screenshot_scale_factor and self.screenshot_scale_factor != 0:
+            actual_w = int(self.screenshot_pos[2] / self.screenshot_scale_factor)
+            actual_h = int(self.screenshot_pos[3] / self.screenshot_scale_factor)
+        else:
+            actual_w = self.screenshot_pos[2]
+            actual_h = self.screenshot_pos[3]
+        x1 = self.screenshot_pos[0]
+        y1 = self.screenshot_pos[1]
+        x2 = x1 + actual_w
+        y2 = y1 + actual_h
+        self._debug_draw_rect((x1, y1), (x2, y2), color=DebugOverlay.COLOR_CYAN, label='crop')
+
+    def _get_debug_color(self, find_type):
+        """根据查找类型返回对应的调试颜色。"""
+        color_map = {
+            'image': DebugOverlay.COLOR_GREEN,
+            'image_threshold': DebugOverlay.COLOR_YELLOW,
+            'text': DebugOverlay.COLOR_BLUE,
+            'min_distance_text': DebugOverlay.COLOR_MAGENTA,
+            'hsv': DebugOverlay.COLOR_ORANGE,
+            'yolo': DebugOverlay.COLOR_RED,
+            'image_with_multiple_targets': DebugOverlay.COLOR_GREEN,
+            'yolo_with_multiple_targets': DebugOverlay.COLOR_RED,
+        }
+        return color_map.get(find_type, DebugOverlay.COLOR_GREEN)
 
     def calculate_crop_with_pos(self, left_top, size):
         """
@@ -60,8 +153,7 @@ class Automation(metaclass=SingletonMeta):
             (size[1]) / height,
         )
 
-
-    def take_screenshot(self, crop=(0, 0, 1, 1)):
+    def take_screenshot(self, crop=(0, 0, 1, 1), use_background_screenshot=None, prefer_frame_screenshot=True):
         """
         捕获游戏窗口的截图。
         :param crop: 截图的裁剪区域，格式为(x1, y1, x2, y2)，默认为全屏。
@@ -70,9 +162,20 @@ class Automation(metaclass=SingletonMeta):
         start_time = time.monotonic()
         while True:
             try:
-                result = Screenshot.take_screenshot(self.window_title, crop=crop)
+                result = Screenshot.take_screenshot(
+                    self.window_title,
+                    crop=crop,
+                    use_background_screenshot=use_background_screenshot,
+                    prefer_frame_screenshot=prefer_frame_screenshot,
+                )
                 if result:
                     self.screenshot, self.screenshot_pos, self.screenshot_scale_factor = result
+                    # 调试模式：清除上一帧的矩形框，并显示裁剪区域
+                    if self._is_debug_enabled():
+                        self._ensure_debug_overlay()
+                        self._debug_clear()
+                        if crop != (0, 0, 1, 1):
+                            self._debug_draw_crop_region(crop)
                     return result
                 else:
                     self.logger.error("截图失败：没有找到游戏窗口")
@@ -116,7 +219,9 @@ class Automation(metaclass=SingletonMeta):
                 template = self.img_cache[target]['template']
             else:
                 mask = ImageUtils.read_template_with_mask(target)  # 读取模板图片掩码
-                template = cv2.imread(target)  # 读取模板图片
+                template = ImageUtils.read_image(target)  # 读取模板图片
+                if template is None:
+                    raise ValueError(f"读取图片失败：{target}")
                 if cacheable:
                     self.img_cache[target] = {'mask': mask, 'template': template}
             screenshot = cv2.cvtColor(np.array(self.screenshot), cv2.COLOR_BGR2RGB)  # 将截图转换为RGB
@@ -180,20 +285,22 @@ class Automation(metaclass=SingletonMeta):
         - 匹配的数量，或在出错时返回 None。
         """
         try:
-            template = cv2.imread(target, cv2.IMREAD_GRAYSCALE)
+            template = ImageUtils.read_image(target, cv2.IMREAD_GRAYSCALE)
             if template is None:
-                raise ValueError("读取图片失败")
+                raise ValueError(f"读取图片失败：{target}")
             bw_map = self.generate_black_white_map(pixel_bgr)
-            return ImageUtils.count_template_matches(bw_map, template, threshold)
+            cnt = ImageUtils.count_template_matches(bw_map, template, threshold)
+            self.logger.debug(f"目标图片：{target.replace('./assets/images/', '')} 匹配数量：{cnt} 匹配阈值：{threshold} 目标像素BGR：{pixel_bgr}")
+            return cnt
         except Exception as e:
             self.logger.error(f"寻找图片并计数出错：{e}")
             return None
 
     def find_image_with_multiple_targets(self, target, threshold, scale_range, relative=False):
         try:
-            template = cv2.imread(target, cv2.IMREAD_GRAYSCALE)
+            template = ImageUtils.read_image(target, cv2.IMREAD_GRAYSCALE)
             if template is None:
-                raise ValueError("读取图片失败")
+                raise ValueError(f"读取图片失败：{target}")
             screenshot = cv2.cvtColor(np.array(self.screenshot), cv2.COLOR_BGR2GRAY)
             matches = ImageUtils.scale_and_match_template_with_multiple_targets(screenshot, template, threshold, scale_range)
             if len(matches) == 0:
@@ -253,12 +360,16 @@ class Automation(metaclass=SingletonMeta):
         :param relative: 是否返回相对位置。
         :return: 如果找到，返回文本的位置坐标。
         """
-        for box, (text, confidence) in self.ocr_result:
-            match, matched_text = self.is_text_match(text, targets, include)
-            if match:
-                self.matched_text = matched_text  # 更新匹配的文本变量
-                self.logger.debug(f"目标文字：{matched_text} 相似度：{confidence:.2f}")
-                return self.calculate_text_position(box, relative)
+        for target in targets:
+            for box, (text, confidence) in self.ocr_result:
+                if include:
+                    match = target in text
+                else:
+                    match = text == target
+                if match:
+                    self.matched_text = target
+                    self.logger.debug(f"目标文字：{target} 相似度：{confidence:.2f}")
+                    return self.calculate_text_position(box, relative)
         self.logger.debug(f"目标文字：{', '.join(targets)} 未找到匹配文字")
         return None, None
 
@@ -392,11 +503,231 @@ class Automation(metaclass=SingletonMeta):
         y = (top + bottom) // 2 + offset[1]
         return x, y
 
-    def find_element(self, target, find_type, threshold=None, max_retries=1, crop=(0, 0, 1, 1), take_screenshot=True, relative=False, scale_range=None, include=None, need_ocr=True, source=None, source_type=None, pixel_bgr=None, position="bottom_right", retry_delay: float = 1.0):
+    def find_hsv_element(self, target, relative=False):
+        """
+        通过HSV颜色范围查找最大连通区域的外接矩形。
+        :param target: 元组 (lower, upper)，分别为HSV下界和上界的numpy数组。
+        :param relative: 是否返回相对位置。
+        :return: (top_left, bottom_right) 或 (None, None)。
+        """
+        lower, upper = target
+        img = np.array(self.screenshot)
+        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, lower, upper)
+
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+        if num_labels <= 1:
+            return None, None
+
+        max_area = 0
+        best_box = None
+        for i in range(1, num_labels):
+            x, y, bw, bh, area = stats[i]
+            if area > max_area:
+                max_area = area
+                best_box = (x, y, bw, bh)
+
+        x, y, bw, bh = best_box
+
+        scale_factor = self.screenshot_scale_factor if not relative else 1
+        top_left = (int(x / scale_factor) + self.screenshot_pos[0] * (not relative),
+                    int(y / scale_factor) + self.screenshot_pos[1] * (not relative))
+        bottom_right = (int((x + bw) / scale_factor) + self.screenshot_pos[0] * (not relative),
+                        int((y + bh) / scale_factor) + self.screenshot_pos[1] * (not relative))
+        return top_left, bottom_right
+
+    def _get_yolo_session(self, model_path):
+        """获取或创建YOLO ONNX推理会话（带缓存）。"""
+        if not hasattr(self, '_yolo_sessions'):
+            self._yolo_sessions = {}
+        if model_path not in self._yolo_sessions:
+            import onnxruntime as ort
+            # providers = ort.get_available_providers()
+            preferred = []
+            # if "DmlExecutionProvider" in providers:
+            #     preferred.append("DmlExecutionProvider")
+            preferred.append("CPUExecutionProvider")
+            self._yolo_sessions[model_path] = ort.InferenceSession(model_path, providers=preferred)
+        return self._yolo_sessions[model_path]
+
+    def _normalize_yolo_input_size(self, input_size):
+        """将YOLO输入尺寸标准化为 (width, height)。"""
+        if input_size is None:
+            return None
+
+        if isinstance(input_size, (list, tuple)):
+            if len(input_size) != 2:
+                raise ValueError("input_size 列表或元组必须包含两个值")
+            input_w, input_h = (int(v) for v in input_size)
+        else:
+            normalized_input_size = int(input_size)
+            input_w = normalized_input_size
+            input_h = normalized_input_size
+
+        if input_w <= 0 or input_h <= 0:
+            raise ValueError("input_size 必须大于 0")
+
+        return input_w, input_h
+
+    def _get_yolo_model_input_size(self, session):
+        """从ONNX模型输入中提取静态尺寸；动态尺寸则返回None。"""
+        input_shape = session.get_inputs()[0].shape
+        if len(input_shape) < 4:
+            return None
+
+        input_h = input_shape[2]
+        input_w = input_shape[3]
+        if not isinstance(input_h, (int, np.integer)) or not isinstance(input_w, (int, np.integer)):
+            return None
+
+        return int(input_w), int(input_h)
+
+    def _resolve_yolo_input_size(self, session, input_size=None):
+        """优先使用模型声明的静态输入尺寸，动态模型再回退到target配置。"""
+        requested_input_size = self._normalize_yolo_input_size(input_size)
+        model_input_size = self._get_yolo_model_input_size(session)
+
+        if model_input_size is not None:
+            if requested_input_size is not None and requested_input_size != model_input_size:
+                self.logger.warning(
+                    f"YOLO input_size={requested_input_size[0]}x{requested_input_size[1]} 与模型输入尺寸 "
+                    f"{model_input_size[0]}x{model_input_size[1]} 不一致，已自动使用模型输入尺寸"
+                )
+            return model_input_size
+
+        if requested_input_size is not None:
+            return requested_input_size
+
+        return 640, 640
+
+    def _yolo_preprocess(self, img, input_size=640):
+        """YOLO letterbox预处理。返回 (input_tensor, scale)。"""
+        input_w, input_h = self._normalize_yolo_input_size(input_size)
+        orig_h, orig_w = img.shape[:2]
+        scale = min(input_w / orig_w, input_h / orig_h)
+        new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+        resized = cv2.resize(img, (new_w, new_h))
+        canvas = np.full((input_h, input_w, 3), 114, dtype=np.uint8)
+        canvas[:new_h, :new_w] = resized
+        input_img = canvas[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255.0
+        return np.expand_dims(input_img, axis=0), scale
+
+    def _get_yolo_target_config(self, target):
+        """从target中提取YOLO推理配置。"""
+        model_path = target["model_path"]
+        names = target["names"]
+        target_class = target.get("target_class")
+        if isinstance(target_class, str):
+            target_class = [target_class]
+
+        input_size = target.get("input_size")
+
+        return model_path, names, target_class, input_size
+
+    def _yolo_postprocess(self, preds, scale, names, target_classes, threshold):
+        """YOLO后处理，返回按置信度降序排列的检测结果列表 [(cls_name, score, x1, y1, x2, y2), ...]。"""
+        results = []
+        for det in preds:
+            x1, y1, x2, y2, score, cls_id = det
+            if score < threshold:
+                continue
+            cls_id = int(cls_id)
+            if cls_id >= len(names):
+                continue
+            cls_name = names[cls_id]
+            if target_classes is not None and cls_name not in target_classes:
+                continue
+            results.append((cls_name, float(score), x1 / scale, y1 / scale, x2 / scale, y2 / scale))
+        results.sort(key=lambda r: r[1], reverse=True)
+        return results
+
+    def _yolo_box_to_pos(self, x1, y1, x2, y2, relative):
+        """将YOLO检测框坐标转换为与其他find方法一致的 (top_left, bottom_right) 格式。"""
+        scale_factor = self.screenshot_scale_factor if not relative else 1
+        offset_x = self.screenshot_pos[0] * (not relative)
+        offset_y = self.screenshot_pos[1] * (not relative)
+        top_left = (int(x1 / scale_factor) + offset_x, int(y1 / scale_factor) + offset_y)
+        bottom_right = (int(x2 / scale_factor) + offset_x, int(y2 / scale_factor) + offset_y)
+        return top_left, bottom_right
+
+    def find_yolo_element(self, target, threshold=0.25, relative=False):
+        """
+        使用YOLO模型查找置信度最高的目标对象。
+        :param target: dict，包含 model_path（模型路径）, names（类别名列表）, target_class（目标类名，str或list，可选）, input_size（模型输入尺寸，可选，动态模型时生效）。
+        :param threshold: 置信度阈值。
+        :param relative: 是否返回相对位置。
+        :return: (top_left, bottom_right) 或 (None, None)。
+        """
+        try:
+            model_path, names, target_class, input_size = self._get_yolo_target_config(target)
+
+            session = self._get_yolo_session(model_path)
+            img = cv2.cvtColor(np.array(self.screenshot), cv2.COLOR_RGB2BGR)
+            input_size = self._resolve_yolo_input_size(session, input_size)
+            input_tensor, scale = self._yolo_preprocess(img, input_size)
+
+            input_name = session.get_inputs()[0].name
+            outputs = session.run(None, {input_name: input_tensor})
+            preds = outputs[0][0]
+
+            results = self._yolo_postprocess(preds, scale, names, target_class, threshold)
+            if not results:
+                target_desc = ', '.join(target_class) if target_class else 'any'
+                self.logger.debug(f"YOLO未检测到目标：{target_desc} 阈值：{threshold}")
+                return None, None
+
+            cls_name, score, x1, y1, x2, y2 = results[0]
+            self.logger.debug(f"YOLO检测：{cls_name} 置信度：{score:.5f}")
+            return self._yolo_box_to_pos(x1, y1, x2, y2, relative)
+        except Exception as e:
+            self.logger.error(f"YOLO查找出错：{e}")
+            return None, None
+
+    def find_yolo_with_multiple_targets(self, target, threshold=0.25, relative=False):
+        """
+        使用YOLO模型查找所有匹配的目标对象。
+        :param target: dict，包含 model_path（模型路径）, names（类别名列表）, target_class（目标类名，str或list，可选）, input_size（模型输入尺寸，可选，动态模型时生效）。
+        :param threshold: 置信度阈值。
+        :param relative: 是否返回相对位置。
+        :return: [(top_left, bottom_right), ...] 列表。
+        """
+        try:
+            model_path, names, target_class, input_size = self._get_yolo_target_config(target)
+
+            session = self._get_yolo_session(model_path)
+            img = cv2.cvtColor(np.array(self.screenshot), cv2.COLOR_RGB2BGR)
+            input_size = self._resolve_yolo_input_size(session, input_size)
+            input_tensor, scale = self._yolo_preprocess(img, input_size)
+
+            input_name = session.get_inputs()[0].name
+            outputs = session.run(None, {input_name: input_tensor})
+            preds = outputs[0][0]
+
+            results = self._yolo_postprocess(preds, scale, names, target_class, threshold)
+            if not results:
+                target_desc = ', '.join(target_class) if target_class else 'any'
+                self.logger.debug(f"YOLO未检测到目标：{target_desc} 阈值：{threshold}")
+                return []
+
+            matches = []
+            for cls_name, score, x1, y1, x2, y2 in results:
+                self.logger.debug(f"YOLO检测：{cls_name} 置信度：{score:.5f}")
+                matches.append(self._yolo_box_to_pos(x1, y1, x2, y2, relative))
+            return matches
+        except Exception as e:
+            self.logger.error(f"YOLO查找出错：{e}")
+            return []
+
+    def find_element(self, target, find_type, threshold=None, max_retries=1, crop=(0, 0, 1, 1), take_screenshot=True, relative=False, scale_range=None, include=None, need_ocr=True, source=None, source_type=None, pixel_bgr=None, position="bottom_right", retry_delay: float = 1.0, use_background_screenshot=None, prefer_frame_screenshot=True):
         """
         查找元素，并根据指定的查找类型执行不同的查找策略。
         :param target: 查找目标，可以是图像路径或文字。
-        :param find_type: 查找类型，例如'image', 'text'等。
+        :param find_type: 查找类型，例如'image', 'text', 'hsv'等。
         :param threshold: 查找阈值，用于图像查找时的相似度匹配。
         :param max_retries: 最大重试次数。
         :param crop: 截图的裁剪区域，格式为（x坐标百分比，y坐标百分比，长百分比，宽百分比）。
@@ -410,16 +741,20 @@ class Automation(metaclass=SingletonMeta):
         :param pixel_bgr: 颜色查找时的BGR值。
         :param position: 查找方位，'top_left', 'top_right', 'bottom_left', 或 'bottom_right'。
         :param retry_delay: 每次重试之间的等待时间（秒），默认1.0秒。
+        :param use_background_screenshot: 是否使用后台截图。为None时沿用配置文件设置。
         :return: 查找到的元素位置，或者在图像计数查找时返回计数。
         """
         take_screenshot = take_screenshot and need_ocr
         max_retries = 1 if not take_screenshot else max_retries
+        # 调试模式：确保叠加层可见
+        if self._is_debug_enabled():
+            self._ensure_debug_overlay()
         for i in range(max_retries):
             if take_screenshot:
-                screenshot_result = self.take_screenshot(crop)
+                screenshot_result = self.take_screenshot(crop, use_background_screenshot, prefer_frame_screenshot)
                 if not screenshot_result:
                     continue  # 如果截图失败，则跳过本次循环
-            if find_type in ['image', 'image_threshold', 'text', "min_distance_text", 'crop']:
+            if find_type in ['image', 'image_threshold', 'text', "min_distance_text", 'crop', 'hsv', 'yolo']:
                 if find_type in ['image', 'image_threshold']:
                     top_left, bottom_right, image_threshold = self.find_image_element(target, threshold, scale_range, relative)
                 elif find_type == 'text':
@@ -427,16 +762,47 @@ class Automation(metaclass=SingletonMeta):
                 elif find_type == 'min_distance_text':
                     top_left, bottom_right = self.find_min_distance_text_element(target, source, source_type, include, need_ocr, position)
                 elif find_type == 'crop':
-                    top_left = (int(target[0] * self.screenshot.width) + self.screenshot_pos[0], int(target[1] * self.screenshot.height) + self.screenshot_pos[1])
-                    bottom_right = (int((target[0] + target[2]) * self.screenshot.width) + self.screenshot_pos[0], int((target[1] + target[3]) * self.screenshot.height) + self.screenshot_pos[1])
+                    scale_factor = self.screenshot_scale_factor if not relative else 1
+                    offset_x = self.screenshot_pos[0] * (not relative)
+                    offset_y = self.screenshot_pos[1] * (not relative)
+                    top_left = (int(target[0] * self.screenshot.width / scale_factor) + offset_x,
+                                int(target[1] * self.screenshot.height / scale_factor) + offset_y)
+                    bottom_right = (int((target[0] + target[2]) * self.screenshot.width / scale_factor) + offset_x,
+                                    int((target[1] + target[3]) * self.screenshot.height / scale_factor) + offset_y)
+                elif find_type == 'hsv':
+                    top_left, bottom_right = self.find_hsv_element(target, relative)
+                elif find_type == 'yolo':
+                    top_left, bottom_right = self.find_yolo_element(target, threshold or 0.25, relative)
                 if top_left and bottom_right:
+                    # 调试模式：绘制查找结果的矩形框
+                    if self._is_debug_enabled():
+                        color = self._get_debug_color(find_type)
+                        label = target if isinstance(target, str) else str(target)
+                        self._debug_draw_rect(top_left, bottom_right, color=color,
+                                              label=f'{find_type}: {label}')
                     if find_type == 'image_threshold':
                         return image_threshold
                     return top_left, bottom_right
             elif find_type in ['image_count']:
                 return self.find_image_and_count(target, threshold, pixel_bgr)
             elif find_type in ['image_with_multiple_targets']:
-                return self.find_image_with_multiple_targets(target, threshold, scale_range, relative)
+                matches = self.find_image_with_multiple_targets(target, threshold, scale_range, relative)
+                # 调试模式：绘制所有匹配结果
+                if self._is_debug_enabled() and matches:
+                    color = self._get_debug_color(find_type)
+                    for i, match in enumerate(matches):
+                        self._debug_draw_rect(match[0], match[1], color=color,
+                                              label=f'{find_type}[{i}]: {target}')
+                return matches
+            elif find_type == 'yolo_with_multiple_targets':
+                matches = self.find_yolo_with_multiple_targets(target, threshold or 0.25, relative)
+                # 调试模式：绘制所有YOLO检测结果
+                if self._is_debug_enabled() and matches:
+                    color = self._get_debug_color(find_type)
+                    for i, match in enumerate(matches):
+                        self._debug_draw_rect(match[0], match[1], color=color,
+                                              label=f'{find_type}[{i}]')
+                return matches
             else:
                 raise ValueError("错误的类型")
 
@@ -444,35 +810,51 @@ class Automation(metaclass=SingletonMeta):
                 time.sleep(retry_delay)  # 在重试前等待一定时间
         return None
 
-    def click_element_with_pos(self, coordinates, offset=(0, 0), action="click", cnt=1):
+    def shutdown_debug(self):
+        """关闭调试叠加层。"""
+        if self._debug_overlay is not None:
+            self._debug_overlay.hide_overlay()
+            self._debug_initialized = False
+
+    def click_element_with_pos(self, coordinates, offset=(0, 0), action="click", cnt=1, press_duration: float = 0.0):
         """
         在指定坐标上执行点击操作。
 
         参数:
         - coordinates: 元素的坐标。
         - offset: 坐标的偏移量。
-        - action: 执行的动作，包括'click', 'down', 'move'。
+        - action: 执行的动作，包括'click', 'down', 'up', 'move'。
 
         返回:
         - 如果操作成功，则返回True；否则返回False。
         """
         x, y = self.calculate_click_position(coordinates, offset)
-        # 动作到方法的映射
-        action_map = {
-            "click": self.mouse_click,
-            "down": self.mouse_down,
-            "move": self.mouse_move,
-        }
-
-        if action in action_map:
-            for _ in range(cnt):
-                action_map[action](x, y)
-        else:
+        if action not in {"click", "down", "up", "move"}:
             raise ValueError(f"未知的动作类型: {action}")
+
+        normalized_press_duration = max(0.0, float(press_duration or 0.0))
+
+        for _ in range(cnt):
+            if action == "click":
+                if normalized_press_duration > 0:
+                    self.mouse_down(x, y)
+                    time.sleep(normalized_press_duration)
+                    self.mouse_up()
+                else:
+                    self.mouse_click(x, y)
+            elif action == "down":
+                self.mouse_down(x, y)
+                if normalized_press_duration > 0:
+                    time.sleep(normalized_press_duration)
+            elif action == "up":
+                self.mouse_move(x, y)
+                self.mouse_up()
+            elif action == "move":
+                self.mouse_move(x, y)
 
         return True
 
-    def click_element(self, target, find_type, threshold=None, max_retries=1, crop=(0, 0, 1, 1), take_screenshot=True, relative=False, scale_range=None, include=None, need_ocr=True, source=None, source_type=None, pixel_bgr=None, position="bottom_right", offset=(0, 0), action="click", retry_delay: float = 1.0):
+    def click_element(self, target, find_type, threshold=None, max_retries=1, crop=(0, 0, 1, 1), take_screenshot=True, relative=False, scale_range=None, include=None, need_ocr=True, source=None, source_type=None, pixel_bgr=None, position="bottom_right", offset=(0, 0), action="click", retry_delay: float = 1.0, use_background_screenshot=None, press_duration: float = 0.0, prefer_frame_screenshot=True):
         """
         查找并点击屏幕上的元素。
 
@@ -481,13 +863,15 @@ class Automation(metaclass=SingletonMeta):
         offset: 点击坐标的偏移量。
         action: 执行的动作。
         retry_delay: 每次重试之间的等待时间（秒），默认1.0秒。
+        use_background_screenshot: 是否使用后台截图。为None时沿用配置文件设置。
 
         返回:
         如果找到元素并点击成功，则返回True；否则返回False。
         """
-        coordinates = self.find_element(target, find_type, threshold, max_retries, crop, take_screenshot, relative, scale_range, include, need_ocr, source, source_type, pixel_bgr, position, retry_delay)
+        coordinates = self.find_element(target, find_type, threshold, max_retries, crop, take_screenshot, relative, scale_range, include,
+                                        need_ocr, source, source_type, pixel_bgr, position, retry_delay, use_background_screenshot, prefer_frame_screenshot)
         if coordinates:
-            return self.click_element_with_pos(coordinates, offset, action)
+            return self.click_element_with_pos(coordinates, offset, action, press_duration=press_duration)
         return False
 
     def get_single_line_text(self, crop=(0, 0, 1, 1), blacklist=None, max_retries=3, retry_delay=0.0):
@@ -512,3 +896,135 @@ class Automation(metaclass=SingletonMeta):
                 time.sleep(retry_delay)
         self.logger.debug("OCR未识别到任何文字")
         return None
+
+    def is_rgb_ratio_above_threshold(self, crop, rgb, threshold, tolerance=0.0, take_screenshot=True):
+        """判断指定 crop 区域内目标 RGB 像素占比是否超过阈值。
+
+        参数:
+        - crop: 裁剪区域，格式为 (x, y, w, h)，使用相对比例(0~1)。
+        - rgb: 目标颜色，格式为 (R, G, B)。
+        - threshold: 占比阈值，支持 0~1 的比例值或 0~100 的百分比值。
+        - tolerance: RGB 通道允许偏差，支持 0~1 的比例值或 0~100 的百分比值。
+          例如 0.05 或 5 表示每个通道允许约 13 的偏差。
+
+        返回:
+        - 若目标 RGB 像素占比超过阈值则返回 True，否则返回 False。
+        """
+        if not isinstance(rgb, (list, tuple)) or len(rgb) != 3 or not all(isinstance(v, (int, float)) for v in rgb):
+            raise ValueError("rgb 参数必须是 (R, G, B)")
+
+        if not isinstance(threshold, (int, float)):
+            raise ValueError("threshold 参数必须是数字")
+        if not isinstance(tolerance, (int, float)):
+            raise ValueError("tolerance 参数必须是数字")
+
+        ratio_threshold = float(threshold)
+        if ratio_threshold > 1:
+            if ratio_threshold <= 100:
+                ratio_threshold /= 100
+            else:
+                raise ValueError("threshold 参数必须在 0~1 或 0~100 范围内")
+        if ratio_threshold < 0:
+            raise ValueError("threshold 参数不能小于 0")
+
+        ratio_tolerance = float(tolerance)
+        if ratio_tolerance > 1:
+            if ratio_tolerance <= 100:
+                ratio_tolerance /= 100
+            else:
+                raise ValueError("tolerance 参数必须在 0~1 或 0~100 范围内")
+        if ratio_tolerance < 0:
+            raise ValueError("tolerance 参数不能小于 0")
+
+        if take_screenshot:
+            self.take_screenshot(crop)
+
+        img_np = np.array(self.screenshot)
+        if img_np.size == 0:
+            self.logger.warning("截图为空，无法计算 RGB 占比")
+            return False
+        if img_np.ndim == 2:
+            self.logger.warning("当前截图为灰度图，无法按 RGB 计算占比")
+            return False
+
+        rgb_tuple = tuple(int(v) for v in rgb)
+        channel_tolerance = 255 * ratio_tolerance
+        target_rgb = np.array(rgb_tuple, dtype=np.int16)
+        rgb_img = img_np[:, :, :3].astype(np.int16)
+        matched_pixels = np.count_nonzero(
+            np.all(np.abs(rgb_img - target_rgb) <= channel_tolerance, axis=-1)
+        )
+        total_pixels = rgb_img.shape[0] * rgb_img.shape[1]
+        ratio = matched_pixels / total_pixels if total_pixels else 0
+
+        self.logger.debug(
+            f"RGB占比判断：rgb={rgb_tuple} 容差={ratio_tolerance:.4f} 占比={ratio:.4f} 阈值={ratio_threshold:.4f}"
+        )
+        return ratio > ratio_threshold
+
+    def fill_crop_with_color(self, crop, color, use_background_screenshot=None):
+        """截图后将指定 crop 区域填充为给定颜色。
+
+        参数:
+        - crop: 裁剪区域。可传单个(x, y, w, h)或多个[(x, y, w, h), ...]，
+          均使用相对比例(0~1)。
+        - color: 颜色值。灰度图传 int；彩色图传 (R, G, B) 或 (R, G, B, A)。
+        - use_background_screenshot: 是否使用后台截图。为None时沿用配置文件设置。
+
+        返回:
+        - 处理后的截图对象（PIL Image）。
+        """
+        self.take_screenshot((0, 0, 1, 1), use_background_screenshot)
+
+        img_np = np.array(self.screenshot).copy()
+        h, w = img_np.shape[:2]
+
+        is_single_crop = (
+            isinstance(crop, (list, tuple))
+            and len(crop) == 4
+            and all(isinstance(v, (int, float)) for v in crop)
+        )
+        if is_single_crop:
+            crop_list = [crop]
+        elif isinstance(crop, (list, tuple)):
+            crop_list = list(crop)
+        else:
+            raise ValueError("crop 参数必须是 (x, y, w, h) 或其列表")
+
+        if not crop_list:
+            raise ValueError("crop 列表不能为空")
+
+        if img_np.ndim == 2:
+            fill_value = int(color)
+        else:
+            channel_count = img_np.shape[2]
+            if isinstance(color, int):
+                fill_value = [color] * channel_count
+            else:
+                fill_value = list(color)[:channel_count]
+                if len(fill_value) < channel_count:
+                    fill_value.extend([fill_value[-1]] * (channel_count - len(fill_value)))
+
+        has_valid_crop = False
+        for index, item in enumerate(crop_list):
+            if not isinstance(item, (list, tuple)) or len(item) != 4 or not all(isinstance(v, (int, float)) for v in item):
+                self.logger.warning(f"无效的 crop 格式，已跳过: index={index}, crop={item}")
+                continue
+
+            x1 = max(0, min(w, int(item[0] * w)))
+            y1 = max(0, min(h, int(item[1] * h)))
+            x2 = max(0, min(w, int((item[0] + item[2]) * w)))
+            y2 = max(0, min(h, int((item[1] + item[3]) * h)))
+
+            if x2 <= x1 or y2 <= y1:
+                self.logger.warning(f"无效的 crop 区域，已跳过: index={index}, crop={item}")
+                continue
+
+            img_np[y1:y2, x1:x2] = fill_value
+            has_valid_crop = True
+
+        if not has_valid_crop:
+            self.logger.warning("未找到有效的 crop 区域，截图未修改")
+
+        self.screenshot = Image.fromarray(img_np)
+        return self.screenshot

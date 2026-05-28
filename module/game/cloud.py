@@ -8,8 +8,9 @@ import base64
 import requests
 import time
 import io
+import ctypes
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, SessionNotCreatedException
+from selenium.common.exceptions import TimeoutException, SessionNotCreatedException, StaleElementReferenceException
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.edge.options import Options as EdgeOptions
@@ -113,6 +114,8 @@ class CloudGameController(GameControllerBase):
         self.cfg = cfg
         self.logger = logger
 
+        self._last_interruption_check_time = 0.0
+
         # 二维码登录通知限流（避免夜间定时任务反复刷屏）
         self._qr_notify_sent_count = 0
         self._qr_notify_max_count = 3
@@ -122,7 +125,7 @@ class CloudGameController(GameControllerBase):
 
         atexit.register(self._clean_at_exit)
 
-    def _wait_game_page_loaded(self, timeout=5) -> None:
+    def _wait_game_page_loaded(self, timeout=30) -> None:
         """等待云崩铁网页加载出来，这里以背景图是否加载出来为准"""
         if not self.driver:
             return
@@ -230,6 +233,13 @@ class CloudGameController(GameControllerBase):
             "--disable-blink-features=AutomationControlled",  # 去除自动化痕迹，防止被人机验证
             f"--remote-debugging-port={self.cfg.browser_debug_port}",   # 调试端口，可用于复用浏览器
         ]
+        # if not headless:
+        #     args += [
+        #         "--disable-backgrounding-occluded-windows",  # 避免窗口被遮挡/最小化后页面降速
+        #         "--disable-renderer-backgrounding",          # 避免渲染进程在后台被降级
+        #         "--disable-background-timer-throttling",     # 避免后台定时器被节流
+        #         "--disable-features=CalculateNativeWinOcclusion",  # 关闭 Windows 原生遮挡检测
+        #     ]
         if self.cfg.browser_persistent_enable:
             args += [
                 f"--user-data-dir={self.user_profile_path}",   # UserProfile 路径
@@ -273,6 +283,11 @@ class CloudGameController(GameControllerBase):
         # 记录 driver 可执行路径和 service，以便后续清理 chromedriver 进程
         self.driver_path = driver_path
         self._webdriver_service = service
+        # 记录 driver pid
+        try:
+            self._driver_pid = self.driver.service.process.pid
+        except AttributeError:
+            self._driver_pid = None
 
         # 关掉 headless 不匹配的浏览器，防止端口冲突
         if self.close_all_m7a_browser(headless=not headless):
@@ -426,6 +441,28 @@ class CloudGameController(GameControllerBase):
             self.driver.refresh()
             self._wait_game_page_loaded()
 
+    def _get_remaining_playtime(self) -> tuple[int | None, int | None]:
+        """
+        获取云游戏剩余时长（分钟），返回 (付费时长, 免费时长)。
+        若两者均无法识别则返回 (None, None)。
+        """
+        if not self.driver:
+            return None, None
+        try:
+            paid_selector = "#app > div.home-wrapper > div.welcome > div.welcome-wrapper > div > div.wel-card__content > div.wel-card__content--wallet > div.wallet-item.coin > div.left > span:nth-child(1) > span.left__value > span:nth-child(1)"
+            free_selector = "#app > div.home-wrapper > div.welcome > div.welcome-wrapper > div > div.wel-card__content > div.wel-card__content--wallet > div.wallet-item.ft > div.left > span > span:nth-child(2)"
+            paid_els = self.driver.find_elements(By.CSS_SELECTOR, paid_selector)
+            free_els = self.driver.find_elements(By.CSS_SELECTOR, free_selector)
+            paid = int(paid_els[0].text.strip()) if paid_els else None
+            free = int(free_els[0].text.strip()) if free_els else None
+            return paid, free
+        except StaleElementReferenceException:
+            self.log_debug("获取剩余时长失败: 页面元素已更新，将重试")
+            return None, None
+        except Exception as e:
+            self.log_debug(f"获取剩余时长失败: {e}")
+            return None, None
+
     def _check_login(self, timeout=5) -> bool:
         """检查是否已经登录"""
         if not self.driver:
@@ -478,6 +515,24 @@ class CloudGameController(GameControllerBase):
             self.log_error(f"点击进入游戏按钮游戏异常: {e}")
             raise e
 
+    def _wait_game_canvas_ready(self, timeout=30) -> bool:
+        """等待游戏画面 canvas/video 元素出现且尺寸就绪"""
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda d: d.execute_script("""
+                    var el = document.querySelector('.game-player__video');
+                    if (!el) return false;
+                    var w = el.width || el.videoWidth || el.clientWidth;
+                    var h = el.height || el.videoHeight || el.clientHeight;
+                    return w > 0 && h > 0;
+                """)
+            )
+            self.log_info("游戏画面已加载")
+            return True
+        except TimeoutException:
+            self.log_warning("等待游戏画面加载超时，继续尝试")
+            return False
+
     def _wait_in_queue(self, timeout=600) -> bool:
         """排队等待进入"""
         in_queue_selector = "[class*='waiting-in-queue']"
@@ -501,12 +556,24 @@ class CloudGameController(GameControllerBase):
                 if select_retries >= 5:
                     self.log_error("选择排队队列超时")
                     return False
-                self.log_info("检测到选择排队队列界面，选择普通队列")
-                self.driver.execute_script("""
-                    try {
-                        document.getElementsByClassName("coin-prior-choose-item-include-info")[1].click();
-                    } catch(e) {}
-                """)
+
+                if self.cfg.cloud_game_use_paid_time and getattr(self, '_paid_time', 0) > 0:
+                    self.log_info("检测到选择排队队列界面，配置开启了使用付费时间，选择快速队列")
+                    self.driver.execute_script("""
+                        try {
+                            document.getElementsByClassName("coin-prior-choose-item-include-info")[0].click();
+                        } catch(e) {}
+                    """)
+                else:
+                    if self.cfg.cloud_game_use_paid_time:
+                        # self.cfg.cloud_game_use_paid_time = False
+                        self.log_warning("当前账号付费时间不足，已切换为免费时间。")
+                    self.log_info("检测到选择排队队列界面，选择普通队列")
+                    self.driver.execute_script("""
+                        try {
+                            document.getElementsByClassName("coin-prior-choose-item-include-info")[1].click();
+                        } catch(e) {}
+                    """)
                 time.sleep(2)
                 status = WebDriverWait(self.driver, 10).until(
                     lambda d: d.execute_script("""
@@ -518,7 +585,8 @@ class CloudGameController(GameControllerBase):
                 )
 
             if status == "game_running":
-                self.log_info("游戏已启动，无需排队")
+                self.log_info("游戏已启动，无需排队，等待游戏画面加载...")
+                self._wait_game_canvas_ready()
                 return True
             elif status == "in_queue":
                 self.log_info("正在排队...")
@@ -528,7 +596,8 @@ class CloudGameController(GameControllerBase):
                 while time.monotonic() - start_time < timeout:
                     # 检查是否已退出排队
                     if not self.driver.find_elements(By.CSS_SELECTOR, in_queue_selector):
-                        self.log_info("排队成功，正在进入游戏")
+                        self.log_info("排队成功，等待游戏画面加载...")
+                        self._wait_game_canvas_ready()
                         return True
                     # 检测预计等待时间
                     wait_time = self.driver.execute_script("""
@@ -559,6 +628,42 @@ class CloudGameController(GameControllerBase):
             self.log_error(f"等待排队异常: {e}")
             return False
 
+    def _check_time_insufficient_dialog(self) -> bool:
+        """检测时长不足弹窗"""
+        if not self.driver:
+            return False
+        try:
+            dialog = self.driver.find_elements(By.CSS_SELECTOR, "[aria-labelledby='温馨提示']")
+            if not dialog:
+                return False
+            content = dialog[0].text
+            if "星云币时长不足" in content or "无法消耗免费时长" in content:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def check_cloud_game_interruptions(self) -> None:
+        """检测云游戏中的中断弹窗（时长不足等），检测到则推送通知并中断运行"""
+        if not self.driver:
+            return
+
+        now = time.time()
+        if now - self._last_interruption_check_time < 20:
+            return
+        self._last_interruption_check_time = now
+
+        if self._check_time_insufficient_dialog():
+            self.log_error("检测到付费时长耗尽弹窗，正在中断运行")
+            from module.notification import notif
+            from module.notification.notification import NotificationLevel
+            notif.notify(
+                content="云游戏付费时长已耗尽，无法继续游戏。请重新运行。",
+                level=NotificationLevel.ERROR,
+            )
+            self.stop_game()
+            raise SystemExit("云游戏付费时长已耗尽，游戏中断")
+
     def _clean_at_exit(self) -> None:
         """当脚本退出时，关闭所有 headless 浏览器"""
         if self.close_all_m7a_browser(headless=True):
@@ -580,12 +685,22 @@ class CloudGameController(GameControllerBase):
         """
         browsers: list[psutil.Process] = []
 
-        browser_names = {'chrome.exe', 'msedge.exe'}
+        browser_names = {'chrome.exe', 'msedge.exe', 'chrome', 'msedge', 'google-chrome', 'google-chrome-stable'}
         browser_tag = self.BROWSER_TAG
+
+        for path_attr in ('browser_path',):
+            if hasattr(self, path_attr):
+                p = getattr(self, path_attr)
+                if p:
+                    browser_names.add(os.path.basename(p))
+
+        env_path = os.environ.get('MARCH7TH_BROWSER_PATH')
+        if env_path:
+            browser_names.add(os.path.basename(env_path))
 
         for proc in psutil.process_iter(['pid', 'name']):
             name = proc.info.get('name')
-            if name not in browser_names:
+            if not name or name.lower() not in browser_names:
                 continue
 
             try:
@@ -630,13 +745,23 @@ class CloudGameController(GameControllerBase):
         """单独清理 chromedriver 进程并返回被关闭的进程列表"""
         closed: list[psutil.Process] = []
 
+        # 尝试通过记录的 pid 直接清理 driver
+        if hasattr(self, '_driver_pid') and self._driver_pid:
+            try:
+                p = psutil.Process(self._driver_pid)
+                p.terminate()
+                closed.append(p)
+                return closed
+            except psutil.NoSuchProcess:
+                pass
+
         try:
             chromedrivers: list[psutil.Process] = []
 
             # 只获取轻量字段，避免 ppid / exe 带来的性能问题
             for proc in psutil.process_iter(['pid', 'name']):
                 name = proc.info.get('name')
-                if name and name.lower() == 'chromedriver.exe':
+                if name and name.lower() in ('chromedriver.exe', 'chromedriver', 'msedgedriver', 'msedgedriver.exe'):
                     chromedrivers.append(proc)
 
             current_pid = os.getpid()
@@ -762,7 +887,7 @@ class CloudGameController(GameControllerBase):
 
     def _send_qr_notification(self, img_bytes: bytes, qr_link: str) -> bool:
         """通过已配置的通知渠道发送二维码图片
-        
+
         支持所有启用图片发送的通知渠道（飞书、Telegram、企业微信等）
         并带有限流，避免二维码刷新时重复推送过多通知。
         """
@@ -798,7 +923,6 @@ class CloudGameController(GameControllerBase):
 
         self.log_info(f"二维码登录通知已发送（{self._qr_notify_sent_count}/{self._qr_notify_max_count}）")
         return True
-
 
     def _decode_qr_from_element(self, qr_img, qr_filename: str) -> None:
         try:
@@ -843,7 +967,7 @@ class CloudGameController(GameControllerBase):
                 self.log_info("二维码内容：")
                 self.log_info(data)
                 self.log_info("提示：你也可以将该内容自行生成二维码后再扫码登录。")
-                
+
                 # 发送二维码登录通知
                 try:
                     self._send_qr_notification(img_bytes, data)
@@ -990,37 +1114,358 @@ class CloudGameController(GameControllerBase):
 
             if self.cfg.browser_dump_cookies_enable:
                 self._save_cookies()
-            self._click_enter_game()
-            if not self._wait_in_queue(int(self.cfg.cloud_game_max_queue_time) * 60):
-                return False
-            self._confirm_viewport_resolution()  # 将浏览器内部分辨率设置为 1920x1080
 
-            self.log_info("进入云游戏成功")
-            return True
+            # 检测剩余时长，为 0 则直接终止（等待钱包区域渲染，最多 5 秒）
+            self.log_info("正在检测云游戏剩余时长...")
+            paid, free = None, None
+            for _ in range(5):
+                paid, free = self._get_remaining_playtime()
+                if paid is not None or free is not None:
+                    break
+                time.sleep(1)
+
+            remaining = (paid or 0) + (free or 0)
+            self._paid_time = paid or 0
+
+            if paid is None and free is None:
+                self.log_warning("无法识别剩余时长，将继续尝试进入游戏")
+                remaining = None
+                self._click_enter_game()
+                if not self._wait_in_queue(int(self.cfg.cloud_game_max_queue_time) * 60):
+                    return False
+                self._confirm_viewport_resolution()  # 将浏览器内部分辨率设置为 1920x1080
+                self.log_info("进入云游戏成功")
+                return True
+            elif remaining == 0:
+                self.log_error("云游戏剩余时长为 0，停止运行")
+            else:
+                self.log_info(f"云游戏剩余时长：{remaining} 分钟（付费：{paid or 0} 分钟，免费：{free or 0} 分钟）")
+                self._click_enter_game()
+                if not self._wait_in_queue(int(self.cfg.cloud_game_max_queue_time) * 60):
+                    return False
+                self._confirm_viewport_resolution()  # 将浏览器内部分辨率设置为 1920x1080
+                self.log_info("进入云游戏成功")
+                return True
         except Exception as e:
             self.try_dump_page()
             self.log_error(f"进入云游戏失败: {e}")
             return False
 
-    def take_screenshot(self) -> bytes:
-        """浏览器内截图"""
+        if remaining == 0:
+            raise Exception("云游戏剩余时长为 0，停止运行")
+        return False
+
+    def _take_video_screenshot(self, crop=(0, 0, 1, 1)) -> tuple[bytes, tuple[int, int]] | None:
+        """直接从云游戏画面元素抓取当前帧，避免整页截图开销。"""
         if not self.driver:
             return None
+
+        try:
+            result = self.driver.execute_async_script(
+                """
+                const crop = arguments[0];
+                const callback = arguments[arguments.length - 1];
+
+                const safeNumber = (value) => Number.isFinite(value) ? Number(value) : null;
+                const buildRect = (rect) => ({
+                    x: safeNumber(rect.x),
+                    y: safeNumber(rect.y),
+                    width: safeNumber(rect.width),
+                    height: safeNumber(rect.height),
+                });
+                const buildSourceDebug = (element) => {
+                    if (!element) {
+                        return null;
+                    }
+                    const tagName = element.tagName ? element.tagName.toUpperCase() : null;
+                    const computedStyle = window.getComputedStyle(element);
+                    return {
+                        tagName,
+                        className: String(element.className ?? ''),
+                        sourceKind: tagName === 'CANVAS' ? 'canvas' : (tagName === 'VIDEO' ? 'video' : 'unknown'),
+                        readyState: safeNumber('readyState' in element ? element.readyState : null),
+                        networkState: safeNumber('networkState' in element ? element.networkState : null),
+                        paused: 'paused' in element ? Boolean(element.paused) : null,
+                        ended: 'ended' in element ? Boolean(element.ended) : null,
+                        muted: 'muted' in element ? Boolean(element.muted) : null,
+                        currentTime: safeNumber('currentTime' in element ? element.currentTime : null),
+                        duration: safeNumber('duration' in element ? element.duration : null),
+                        videoWidth: safeNumber('videoWidth' in element ? element.videoWidth : null),
+                        videoHeight: safeNumber('videoHeight' in element ? element.videoHeight : null),
+                        canvasWidth: safeNumber('width' in element ? element.width : null),
+                        canvasHeight: safeNumber('height' in element ? element.height : null),
+                        clientWidth: safeNumber(element.clientWidth),
+                        clientHeight: safeNumber(element.clientHeight),
+                        offsetWidth: safeNumber(element.offsetWidth),
+                        offsetHeight: safeNumber(element.offsetHeight),
+                        currentSrc: typeof element.currentSrc === 'string' && element.currentSrc ? element.currentSrc.slice(0, 300) : null,
+                        crossOrigin: 'crossOrigin' in element ? (element.crossOrigin ?? null) : null,
+                        rect: buildRect(element.getBoundingClientRect()),
+                        display: computedStyle.display,
+                        visibility: computedStyle.visibility,
+                        opacity: computedStyle.opacity,
+                    };
+                };
+                const getSourceInfo = (element) => {
+                    const tagName = element.tagName ? element.tagName.toUpperCase() : '';
+                    if (tagName === 'CANVAS') {
+                        return {
+                            kind: 'canvas',
+                            width: safeNumber(element.width) ?? safeNumber(element.clientWidth),
+                            height: safeNumber(element.height) ?? safeNumber(element.clientHeight),
+                        };
+                    }
+                    if (tagName === 'VIDEO') {
+                        return {
+                            kind: 'video',
+                            width: safeNumber(element.videoWidth) ?? safeNumber(element.clientWidth),
+                            height: safeNumber(element.videoHeight) ?? safeNumber(element.clientHeight),
+                        };
+                    }
+                    return {
+                        kind: 'unknown',
+                        width: safeNumber(element.width) ?? safeNumber(element.videoWidth) ?? safeNumber(element.clientWidth),
+                        height: safeNumber(element.height) ?? safeNumber(element.videoHeight) ?? safeNumber(element.clientHeight),
+                    };
+                };
+                const exportCanvas = (canvas, sourceWidth, sourceHeight, stage, debug) => {
+                    debug.stage = stage;
+                    canvas.toBlob((blob) => {
+                        debug.stage = stage + '_callback';
+                        if (!blob) {
+                            callback({ error: 'canvas.toBlob 返回空结果', debug });
+                            return;
+                        }
+
+                        debug.blobSize = blob.size;
+                        debug.blobType = blob.type;
+
+                        const reader = new FileReader();
+                        reader.onloadend = () => callback({
+                            dataUrl: reader.result,
+                            sourceWidth,
+                            sourceHeight,
+                            debug: {
+                                ...debug,
+                                stage: 'reader_done',
+                                dataUrlLength: typeof reader.result === 'string' ? reader.result.length : null,
+                            },
+                        });
+                        reader.onerror = () => callback({
+                            error: reader.error ? String(reader.error) : 'FileReader 读取失败',
+                            debug: {
+                                ...debug,
+                                stage: 'reader_failed',
+                            },
+                        });
+                        reader.readAsDataURL(blob);
+                    }, 'image/png');
+                };
+
+                const debug = {
+                    stage: 'init',
+                    crop,
+                    locationHref: window.location.href,
+                    documentReadyState: document.readyState,
+                    gamePlayerCount: document.querySelectorAll('.game-player').length,
+                    videoCount: document.querySelectorAll('.game-player__video').length,
+                    canvasPlayerCount: document.querySelectorAll('#canvas-player.game-player__video').length,
+                    timestamp: new Date().toISOString(),
+                };
+
+                try {
+                    debug.stage = 'query_source';
+                    const source = document.querySelector('.game-player__video');
+                    debug.video = buildSourceDebug(source);
+
+                    if (!source) {
+                        callback({ error: '未找到 .game-player__video 元素', debug });
+                        return;
+                    }
+
+                    const sourceInfo = getSourceInfo(source);
+                    debug.sourceKind = sourceInfo.kind;
+                    debug.sourceWidth = sourceInfo.width;
+                    debug.sourceHeight = sourceInfo.height;
+
+                    if (sourceInfo.kind === 'unknown') {
+                        debug.stage = 'unknown_source';
+                        callback({ error: '截图源既不是 canvas 也不是 video', debug });
+                        return;
+                    }
+
+                    if (!sourceInfo.width || !sourceInfo.height) {
+                        debug.stage = 'source_not_ready';
+                        callback({ error: '游戏画面元素尺寸为 0，可能尚未开始渲染', debug });
+                        return;
+                    }
+
+                    debug.stage = 'compute_crop';
+                    const sourceWidth = sourceInfo.width;
+                    const sourceHeight = sourceInfo.height;
+                    const left = Math.min(sourceWidth - 1, Math.max(0, Math.floor(sourceWidth * crop[0])));
+                    const top = Math.min(sourceHeight - 1, Math.max(0, Math.floor(sourceHeight * crop[1])));
+                    const width = Math.min(sourceWidth - left, Math.max(1, Math.floor(sourceWidth * crop[2])));
+                    const height = Math.min(sourceHeight - top, Math.max(1, Math.floor(sourceHeight * crop[3])));
+                    debug.captureRect = { left, top, width, height };
+                    debug.isFullCrop = left == 0 && top == 0 && width == sourceWidth && height == sourceHeight;
+
+                    if (sourceInfo.kind === 'canvas' && debug.isFullCrop) {
+                        exportCanvas(source, sourceWidth, sourceHeight, 'source_canvas_to_blob', debug);
+                        return;
+                    }
+
+                    debug.stage = 'create_canvas';
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+
+                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                    if (!ctx) {
+                        debug.stage = 'get_context_failed';
+                        callback({ error: '无法创建 canvas 2d 上下文', debug });
+                        return;
+                    }
+
+                    debug.stage = 'draw_image';
+                    ctx.drawImage(source, left, top, width, height, 0, 0, width, height);
+
+                    try {
+                        debug.stage = 'read_canvas';
+                        const pixel = ctx.getImageData(0, 0, Math.min(1, width), Math.min(1, height));
+                        debug.sampleRgba = pixel ? Array.from(pixel.data.slice(0, 4)) : null;
+                    } catch (readError) {
+                        debug.readCanvasError = String(readError);
+                    }
+
+                    exportCanvas(canvas, sourceWidth, sourceHeight, 'to_blob', debug);
+                } catch (error) {
+                    callback({
+                        error: String(error),
+                        debug: {
+                            ...debug,
+                            stage: 'exception',
+                        },
+                    });
+                }
+                """,
+                list(crop),
+            )
+        except Exception as e:
+            page_url = None
+            page_title = None
+            try:
+                page_url = self.driver.current_url
+                page_title = self.driver.title
+            except Exception:
+                pass
+            self.log_debug(
+                f"执行视频元素截图脚本异常: crop={crop}, url={page_url}, title={page_title}, error={e}"
+            )
+            raise
+
+        if not result:
+            self.log_debug(f"视频元素截图返回空结果: crop={crop}")
+            return None
+
+        debug_info = result.get("debug")
+
+        if result.get("error"):
+            if debug_info is not None:
+                try:
+                    self.log_debug(
+                        f"视频元素截图失败调试信息: {json.dumps(debug_info, ensure_ascii=False, default=str)}"
+                    )
+                except Exception as log_err:
+                    self.log_debug(f"视频元素截图调试信息序列化失败: {log_err}; 原始调试信息: {debug_info}")
+            error_message = result["error"]
+            if isinstance(debug_info, dict) and debug_info.get("stage"):
+                error_message = f"{error_message} (stage={debug_info['stage']})"
+            raise RuntimeError(error_message)
+
+        data_url = result.get("dataUrl")
+        if not data_url or "," not in data_url:
+            if debug_info is not None:
+                try:
+                    self.log_debug(
+                        f"视频元素截图返回了无效 dataUrl，调试信息: {json.dumps(debug_info, ensure_ascii=False, default=str)}"
+                    )
+                except Exception as log_err:
+                    self.log_debug(f"视频元素截图调试信息序列化失败: {log_err}; 原始调试信息: {debug_info}")
+            else:
+                self.log_debug(f"视频元素截图返回的 dataUrl 无效: keys={list(result.keys())}")
+            return None
+
+        _, encoded = data_url.split(",", 1)
+        return base64.b64decode(encoded), (int(result["sourceWidth"]), int(result["sourceHeight"]))
+
+    def _take_browser_screenshot(self) -> bytes | None:
+        """使用浏览器原生截图能力作为回退方案。"""
+        if not self.driver:
+            return None
+
         # 仅在 macOS 非 headless 模式下使用 CDP 截图，避免浏览器被切换到前台
-        if not self.cfg.browser_headless_enable and platform.system() == "Darwin":
+        # if not self.cfg.browser_headless_enable and platform.system() == "Darwin":
             # Chrome/Chromium 在非 headless 模式下调用 get_screenshot_as_png() 时，
             # 会先确保窗口“可见且未被遮挡”，否则截图内容可能为空或全黑。
             # macOS 的窗口管理要求被截取的 NSWindow 处于前台/可见状态，
             # Chromium 的实现会自动把窗口置前。
             # 改用 CDP 截图接口可以避免这个问题。
-            try:
-                result = self.driver.execute_cdp_cmd("Page.captureScreenshot", {"format": "png"})
-                data = result.get("data") if result else None
-                if data:
-                    return base64.b64decode(data)
-            except Exception as e:
-                self.log_warning(f"CDP 截图失败，回退 WebDriver 截图: {e}")
+        try:
+            self._ensure_window_not_minimized_for_frame_capture()
+            # 未知原因，PNG 格式截图特别慢，改用 JPEG 格式可以显著提升截图速度
+            # result = self.driver.execute_cdp_cmd("Page.captureScreenshot", {"format": "png"})
+            result = self.driver.execute_cdp_cmd("Page.captureScreenshot", {"format": "jpeg", "quality": 100})
+            data = result.get("data") if result else None
+            if data:
+                return base64.b64decode(data)
+        except Exception as e:
+            self.log_debug(f"CDP 截图失败，回退 WebDriver 截图: {e}")
+
         return self.driver.get_screenshot_as_png()
+
+    def _ensure_window_not_minimized_for_frame_capture(self) -> None:
+        """视频帧截图依赖前台窗口持续渲染，最小化时先恢复窗口。"""
+        if self.cfg.browser_headless_enable or sys.platform != "win32":
+            return
+
+        hwnd = self.get_window_handle()
+        if not hwnd:
+            return
+
+        try:
+            user32 = ctypes.windll.user32
+            SW_RESTORE = 9
+            if user32.IsIconic(hwnd):
+                self.log_warning("检测到云游戏浏览器已最小化，视频帧可能停止更新，正在恢复窗口")
+                user32.ShowWindow(hwnd, SW_RESTORE)
+                time.sleep(0.1)
+        except Exception as e:
+            self.log_debug(f"恢复云游戏窗口失败，继续尝试截图: {e}")
+
+    def take_screenshot(self, crop=(0, 0, 1, 1), prefer_frame=True) -> bytes | tuple[bytes, tuple[int, int]] | None:
+        """浏览器内截图"""
+        if not self.driver:
+            return None
+
+        if self.cfg.cloud_game_use_paid_time:
+            self.check_cloud_game_interruptions()
+
+        return self._take_browser_screenshot()
+
+        # 帧截图有内存占用问题，暂不使用
+        if prefer_frame:
+            try:
+                self._ensure_window_not_minimized_for_frame_capture()
+                video_screenshot = self._take_video_screenshot(crop=crop)
+                if video_screenshot:
+                    return video_screenshot
+                else:
+                    self.log_debug("游戏画面元素截图失败，回退到浏览器截图")
+            except Exception as e:
+                self.log_debug(f"游戏画面元素截图失败，回退浏览器截图: {e}")
+
+        return self._take_browser_screenshot()
 
     def execute_cdp_cmd(self, cmd: str, cmd_args: dict):
         return self.driver.execute_cdp_cmd(cmd, cmd_args)
@@ -1080,6 +1525,7 @@ class CloudGameController(GameControllerBase):
             self.log_debug(f"设置战斗二倍速为 {'开启' if status else '关闭'}")
         else:
             self.log_debug("未检测到 UID，跳过设置战斗二倍速")
+            self.log_info("首次启动未检测到 UID，战斗二倍速将在下次启动时自动配置")
 
         save["IntDicts"] = int_dicts
         cloud["value"]["RPGCloudSave"] = json.dumps(save)

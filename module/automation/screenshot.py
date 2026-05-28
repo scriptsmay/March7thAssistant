@@ -5,6 +5,12 @@ from module.config import cfg
 
 class Screenshot:
     @staticmethod
+    def _decode_cloud_game_screenshot(screenshot_bytes):
+        screenshot = Image.open(BytesIO(screenshot_bytes))
+        screenshot.load()
+        return screenshot.copy()
+
+    @staticmethod
     def is_application_fullscreen(window):
         if cfg.cloud_game_enable:
             return True
@@ -120,18 +126,46 @@ class Screenshot:
         return img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
 
     @staticmethod
-    def take_screenshot(title, crop=(0, 0, 1, 1)):
+    def take_screenshot(title, crop=(0, 0, 1, 1), use_background_screenshot=None, prefer_frame_screenshot=True):
         if cfg.cloud_game_enable:
             from module.game import cloud_game
-            screenshot = Image.open(BytesIO(cloud_game.take_screenshot()))
-            width, height = screenshot.size
+            screenshot_result = cloud_game.take_screenshot(crop=crop, prefer_frame=prefer_frame_screenshot)
+            if not screenshot_result:
+                return False
 
-            left = int(width * crop[0])
-            top = int(height * crop[1])
-            crop_width = int(width * crop[2])
-            crop_height = int(height * crop[3])
+            source_width = None
+            source_height = None
+            screenshot_bytes = screenshot_result
+            if isinstance(screenshot_result, tuple):
+                screenshot_bytes, (source_width, source_height) = screenshot_result
 
-            screenshot = screenshot.crop((left, top, left + crop_width, top + crop_height))
+            try:
+                screenshot = Screenshot._decode_cloud_game_screenshot(screenshot_bytes)
+            except Exception as e:
+                cloud_game.log_debug(f"游戏画面截图解码失败，回退浏览器截图: {e}")
+                screenshot_result = cloud_game.take_screenshot(crop=crop, prefer_frame=False)
+                if not screenshot_result:
+                    return False
+
+                source_width = None
+                source_height = None
+                screenshot_bytes = screenshot_result
+                if isinstance(screenshot_result, tuple):
+                    screenshot_bytes, (source_width, source_height) = screenshot_result
+                screenshot = Screenshot._decode_cloud_game_screenshot(screenshot_bytes)
+
+            if source_width is None or source_height is None:
+                source_width, source_height = screenshot.size
+                left = int(source_width * crop[0])
+                top = int(source_height * crop[1])
+                crop_width = int(source_width * crop[2])
+                crop_height = int(source_height * crop[3])
+                screenshot = screenshot.crop((left, top, left + crop_width, top + crop_height))
+            else:
+                left = int(source_width * crop[0])
+                top = int(source_height * crop[1])
+                crop_width = screenshot.width
+                crop_height = screenshot.height
 
             # Selenium 截图分辨率一般就是浏览器窗口实际像素，所以 scale_factor 默认为 1
             screenshot_scale_factor = 1
@@ -146,7 +180,9 @@ class Screenshot:
 
             screenshot = None
 
-            if cfg.use_background_screenshot:
+            use_background = cfg.use_background_screenshot if use_background_screenshot is None else use_background_screenshot
+
+            if use_background:
                 try:
                     screenshot = Screenshot.capture_window_background(window._hWnd, (left, top, width, height), crop)
                 except Exception:

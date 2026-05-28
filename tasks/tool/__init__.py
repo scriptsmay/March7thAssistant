@@ -26,6 +26,7 @@ class ToolManager:
         self.screenshot_data = None
         self.screenshot_error_message = ""
         self.screenshot_window = None
+        self.screenshot_window_options = None
         self.signals = ScreenshotSignals()
         # 连接信号到槽函数
         self.signals.show_window.connect(self._show_screenshot_window_slot)
@@ -56,7 +57,9 @@ class ToolManager:
                 time.sleep(0.5)  # 等待窗口切换
 
             log.debug("开始截图...")
+            start_time = time.monotonic()
             result = Screenshot.take_screenshot(cfg.game_title_name)
+            log.info(f"截图完成，耗时 {(time.monotonic() - start_time) * 1000:.2f} 毫秒")
             if result:
                 log.debug(f"截图成功，图像尺寸: {result[0].size}")
                 self.screenshot_data = result[0]
@@ -97,7 +100,9 @@ class ToolManager:
     def _show_screenshot_window_slot(self, screenshot_image):
         """槽函数：显示截图窗口（自动在主线程中调用）"""
         try:
-            self.screenshot_window = ScreenshotApp(screenshot_image)
+            window_options = self.screenshot_window_options or {}
+            self.screenshot_window_options = None
+            self.screenshot_window = ScreenshotApp(screenshot_image, window_options)
 
             # 检查屏幕分辨率决定是否最大化
             import pyautogui
@@ -213,3 +218,22 @@ def start_screenshot_from_file(file_path: str):
 
     load_thread = threading.Thread(target=load_and_show, daemon=True)
     load_thread.start()
+
+
+def start_workflow_capture(kind: Literal["template", "ocr"], workflow_name: str | None = None):
+    """启动带流程素材保存能力的截图工具。"""
+
+    def capture_and_show():
+        _tool_manager.screenshot_window_options = {
+            "workflow_capture_kind": kind,
+            "workflow_name": workflow_name,
+        }
+        if _tool_manager.run_screenshot():
+            _tool_manager.show_screenshot_window()
+        else:
+            _tool_manager.show_error_dialog(
+                _tool_manager.screenshot_error_message or "截图失败，请稍后重试。"
+            )
+
+    capture_thread = threading.Thread(target=capture_and_show, daemon=True)
+    capture_thread.start()

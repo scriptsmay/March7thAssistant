@@ -6,12 +6,13 @@ from qfluentwidgets import SettingCard, FluentIconBase, InfoBar, InfoBarPosition
 from .messagebox_custom import MessageBoxEdit, MessageBoxEditCode, MessageBoxDate, MessageBoxInstance, MessageBoxInstanceChallengeCount, MessageBoxNotifyTemplate, MessageBoxTeam, MessageBoxFriends, MessageBoxPowerPlan, MessageBoxInstanceTeam
 from tasks.base.tasks import start_task
 from module.config import cfg
-from typing import Union
+from typing import Callable, Union
 import datetime
 import json
 import re
 import sys
 from ..tools.check_update import checkUpdate
+from module.update.version_check import validate_mirrorchyan_cdk
 from module.localization import tr, get_character_names, instance_display_to_raw
 
 
@@ -35,18 +36,82 @@ class CustomPushSettingCard(SettingCard):
         self.hBoxLayout.addSpacing(16)
 
 
+class DualPushSettingCard(SettingCard):
+    leftClicked = Signal()
+    rightClicked = Signal()
+
+    def __init__(self, left_text, right_text, icon: Union[str, QIcon, FluentIconBase], title, content=None, parent=None):
+        super().__init__(icon, title, content, parent)
+
+        self.leftButton = QPushButton(left_text, self)
+        self.rightButton = QPushButton(right_text, self)
+
+        for button in (self.leftButton, self.rightButton):
+            button.setObjectName('primaryButton')
+
+        self.hBoxLayout.addWidget(self.leftButton, 0, Qt.AlignmentFlag.AlignRight)
+        self.hBoxLayout.addSpacing(10)
+        self.hBoxLayout.addWidget(self.rightButton, 0, Qt.AlignmentFlag.AlignRight)
+        self.hBoxLayout.addSpacing(16)
+
+        self.leftButton.clicked.connect(self.leftClicked.emit)
+        self.rightButton.clicked.connect(self.rightClicked.emit)
+
+
+class PushSettingCardAction(SettingCard):
+    def __init__(self, text, icon: Union[str, QIcon, FluentIconBase], title, content_getter: Callable[[], str], callback: Callable[[], None], parent=None):
+        self._content_getter = content_getter
+        self._callback = callback
+        super().__init__(icon, title, content_getter(), parent)
+
+        self.button = QPushButton(text, self)
+        self.hBoxLayout.addWidget(self.button, 0, Qt.AlignmentFlag.AlignRight)
+        self.hBoxLayout.addSpacing(16)
+
+        self.button.clicked.connect(self.__on_clicked)
+
+    def refreshContent(self):
+        self.contentLabel.setText(self._content_getter())
+        self.contentLabel.adjustSize()
+
+    def __on_clicked(self):
+        self._callback()
+        self.refreshContent()
+
+
 class PushSettingCardStr(CustomPushSettingCard):
-    def __init__(self, text, icon: Union[str, QIcon, FluentIconBase], title, configname, parent=None):
+    def __init__(self, text, icon: Union[str, QIcon, FluentIconBase], title, configname, parent=None, empty_content=None):
+        self.empty_content = empty_content
         self.configvalue = str(cfg.get_value(configname))
-        super().__init__(text, icon, title, configname, self.configvalue, parent)
+        super().__init__(text, icon, title, configname, self._display_value(self.configvalue), parent)
         self.button.clicked.connect(self.__onclicked)
+
+    def _display_value(self, value):
+        if value == "" and self.empty_content is not None:
+            return self.empty_content
+        return value
 
     def __onclicked(self):
         message_box = MessageBoxEdit(self.title, self.configvalue, self.window())
         if message_box.exec():
             cfg.set_value(self.configname, message_box.getText())
-            self.contentLabel.setText(message_box.getText())
             self.configvalue = message_box.getText()
+            self.contentLabel.setText(self._display_value(self.configvalue))
+
+
+class _CdkValidationThread(QThread):
+    validationFinished = Signal(bool, str)
+
+    def __init__(self, cdk, parent=None):
+        super().__init__(parent)
+        self.cdk = cdk
+
+    def run(self):
+        try:
+            cdk_expired_time = validate_mirrorchyan_cdk(self.cdk)
+            self.validationFinished.emit(True, str(cdk_expired_time))
+        except Exception as e:
+            self.validationFinished.emit(False, str(e))
 
 
 class PushSettingCardMirrorchyan(SettingCard):
@@ -57,6 +122,8 @@ class PushSettingCardMirrorchyan(SettingCard):
 
         self.title = title
         self.configname = configname
+        self._validation_thread = None
+        self.destroyed.connect(self._cleanup_validation_thread)
 
         self.button3 = QPushButton(tr("交流反馈"), self)
         self.button3.setObjectName('primaryButton')
@@ -78,10 +145,69 @@ class PushSettingCardMirrorchyan(SettingCard):
     def __onclicked(self):
         message_box = MessageBoxEdit(self.title, self.configvalue, self.window())
         if message_box.exec():
-            cfg.set_value(self.configname, message_box.getText())
-            self.contentLabel.setText(message_box.getText())
-            self.configvalue = message_box.getText()
-            checkUpdate(self.update_callback)
+            cdk = message_box.getText()
+            cfg.set_value(self.configname, cdk)
+            self.contentLabel.setText(cdk)
+            self.configvalue = cdk
+            if cdk:
+                self._start_cdk_validation(cdk)
+
+    def _cleanup_validation_thread(self):
+        thread = self._validation_thread
+        if thread is not None:
+            if thread.isRunning():
+                thread.wait(11000)
+            thread.deleteLater()
+            self._validation_thread = None
+
+    def _start_cdk_validation(self, cdk):
+        existing = self._validation_thread
+        if existing is not None:
+            if existing.isRunning():
+                return
+            existing.deleteLater()
+            self._validation_thread = None
+
+        thread = _CdkValidationThread(cdk, self)
+        thread.validationFinished.connect(self._on_cdk_validated)
+        self._validation_thread = thread
+        thread.start()
+
+    def _on_cdk_validated(self, success, result):
+        if success:
+            cdk_expired_time = float(result)
+            expired_dt = datetime.datetime.fromtimestamp(cdk_expired_time, tz=datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            remaining = expired_dt - now
+            days = remaining.days
+            if days > 0:
+                content = tr("剩余 {days} 天").format(days=days)
+            else:
+                content = tr("今天到期")
+            InfoBar.success(
+                title=tr("CDK 有效 (＾∀＾●)"),
+                content=content,
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self.window(),
+            )
+            source_card = self.update_callback.settingInterface.updateSourceCard
+            for i in range(source_card.comboBox.count()):
+                if source_card.comboBox.itemData(i) == "MirrorChyan":
+                    source_card.comboBox.setCurrentIndex(i)
+                    break
+        else:
+            InfoBar.warning(
+                title=tr("CDK 验证失败 (╥╯﹏╰╥)"),
+                content=result,
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self.window(),
+            )
 
     def __onclicked2(self):
         QDesktopServices.openUrl(QUrl("https://mirrorchyan.com/?source=m7a-app"))
@@ -266,6 +392,9 @@ class PushSettingCardCode(CustomPushSettingCard):
 
     def _get_server(self):
         try:
+            # 如果云游戏启用，默认使用国服
+            if cfg.cloud_game_enable:
+                return 'cn'
             if sys.platform == 'win32':
                 from utils.registry.star_rail_setting import get_server_by_registry
                 server = get_server_by_registry()
@@ -371,7 +500,7 @@ class PushSettingCardDate(CustomPushSettingCard):
 class PushSettingCardKey(CustomPushSettingCard):
     def __init__(self, text, icon: Union[str, QIcon, FluentIconBase], title, configname, parent=None):
         self.configvalue = str(cfg.get_value(configname))
-        super().__init__(text, icon, title, configname, self.configvalue, parent)
+        super().__init__(text, icon, title, configname, self._format_key_display(self.configvalue), parent)
         self.button.pressed.connect(self.__onpressed)
         self.button.released.connect(self.__onreleased)
 
@@ -386,8 +515,22 @@ class PushSettingCardKey(CustomPushSettingCard):
             key_name = self._get_key_name(e)
             if key_name:
                 cfg.set_value(self.configname, key_name)
-                self.contentLabel.setText(key_name)
-                self.button.setText(tr("已改为 {}").format(key_name))
+                self.contentLabel.setText(self._format_key_display(key_name))
+                self.button.setText(tr("已改为 {}").format(self._format_key_display(key_name)))
+
+    @staticmethod
+    def _format_key_display(key_name: str) -> str:
+        """将存储的小写键名格式化为显示用的大写/首字母大写形式。"""
+        if not key_name:
+            return key_name
+        # f1-f12 → F1-F12
+        if len(key_name) >= 2 and key_name[0] == 'f' and key_name[1:].isdigit():
+            return 'F' + key_name[1:]
+        # 单个字母 → 大写
+        if len(key_name) == 1 and key_name.isalpha():
+            return key_name.upper()
+        # 其他特殊键 → 首字母大写
+        return key_name[0].upper() + key_name[1:]
 
     def _get_key_name(self, event):
         function_keys = {

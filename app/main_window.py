@@ -1,8 +1,8 @@
-from PySide6.QtCore import Qt, QSize, QFileSystemWatcher, Signal, QObject
+from PySide6.QtCore import Qt, QSize, QPoint, QFileSystemWatcher, Signal, QObject
 from PySide6.QtGui import QIcon, QAction
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QLabel
 
-from qfluentwidgets import NavigationItemPosition, MSFluentWindow, SplashScreen, setThemeColor, NavigationBarPushButton, setTheme, Theme
+from qfluentwidgets import NavigationItemPosition, MSFluentWindow, SplashScreen, setThemeColor, NavigationBarPushButton, setTheme, Theme, themeColor, qconfig
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import InfoBar, InfoBarPosition, SystemTrayMenu
 from app.tools.game_starter import GameStartStatus, GameLaunchThread
@@ -12,6 +12,7 @@ from .help_interface import HelpInterface
 # from .changelog_interface import ChangelogInterface
 from .warp_interface import WarpInterface
 from .tools_interface import ToolsInterface
+from .workflow_interface import WorkflowInterface
 from .setting_interface import SettingInterface
 from .log_interface import LogInterface
 from .common.signal_bus import signalBus
@@ -67,11 +68,26 @@ class ConfigWatcher(QObject):
             self.config_changed.emit()
 
 
+class ClickableLabel(QLabel):
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+
 class MainWindow(MSFluentWindow):
     def __init__(self, task=None, exit_on_complete=False):
         super().__init__()
         self.startup_task = task  # 保存启动时要执行的任务
         self.exit_on_complete = exit_on_complete  # 任务完成后是否退出
+        self.detected_update_version = None
+        self.updateVersionBadge = None
+        qconfig.themeChanged.connect(self._on_theme_changed)
 
         self.initWindow()
 
@@ -122,15 +138,21 @@ class MainWindow(MSFluentWindow):
         self.setMinimumWidth(min_width)
         self.setMinimumHeight(min_height)
 
+        window_memory = cfg.get_value('window_memory', 'size')
         # 从配置文件读取窗口尺寸，确保不低于最小值
-        saved_width = cfg.get_value('window_width', min_width)
-        saved_height = cfg.get_value('window_height', min_height)
-        window_width = max(saved_width, min_width)
-        window_height = max(saved_height, min_height)
-        self.resize(window_width, window_height)
+        if window_memory in ('size', 'size_and_position'):
+            saved_width = cfg.get_value('window_width', min_width)
+            saved_height = cfg.get_value('window_height', min_height)
+            window_width = max(saved_width, min_width)
+            window_height = max(saved_height, min_height)
+            self.resize(window_width, window_height)
+        else:
+            self.resize(min_width, min_height)
 
         self.setWindowIcon(QIcon('./assets/logo/March7th.ico'))
         self.setWindowTitle("March7th Assistant")
+        # 分离系统窗口标题与应用内标题栏文本
+        self._refreshWindowTitleBar()
 
         # 创建启动画面
         self.splashScreen = SplashScreen(self.windowIcon(), self)
@@ -138,17 +160,84 @@ class MainWindow(MSFluentWindow):
         self.splashScreen.titleBar.maxBtn.setHidden(True)
         self.splashScreen.raise_()
 
-        screen = QApplication.primaryScreen().availableGeometry()
-        w, h = screen.width(), screen.height()
-        self.move(w // 2 - self.width() // 2, h // 2 - self.height() // 2)
+        primary_screen = QApplication.primaryScreen().availableGeometry()
+        w, h = primary_screen.width(), primary_screen.height()
+
+        saved_x = cfg.get_value('window_x', None)
+        saved_y = cfg.get_value('window_y', None)
+
+        if window_memory in ('position', 'size_and_position') and saved_x is not None and saved_y is not None:
+            # 尝试找到保存位置所在的屏幕，找不到则回退到主屏幕
+            target_screen = QApplication.screenAt(QPoint(int(saved_x), int(saved_y)))
+            screen = target_screen.availableGeometry() if target_screen else primary_screen
+            max_x = max(screen.left(), screen.right() - self.width())
+            max_y = max(screen.top(), screen.bottom() - self.height())
+            restored_x = max(screen.left(), min(int(saved_x), max_x))
+            restored_y = max(screen.top(), min(int(saved_y), max_y))
+            self.move(restored_x, restored_y)
+        else:
+            self.move(w // 2 - self.width() // 2, h // 2 - self.height() // 2)
 
         # 根据配置决定窗口显示方式
-        if cfg.get_value('window_maximized', False):
+        if window_memory in ('size', 'size_and_position') and cfg.get_value('window_maximized', False):
             self.showMaximized()
         else:
             self.show()
 
         QApplication.processEvents()
+
+    def _baseTitleBarText(self):
+        return f"March7th Assistant {cfg.version}"
+
+    def _ensureUpdateVersionBadge(self):
+        if self.updateVersionBadge is not None:
+            return self.updateVersionBadge
+
+        if not hasattr(self, 'titleBar') or not hasattr(self.titleBar, 'hBoxLayout'):
+            return None
+
+        badge = ClickableLabel(self.titleBar)
+        badge.hide()
+        badge.setStyleSheet(f"color: {themeColor().name()}; font-weight: 700;")
+        badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        badge.clicked.connect(self._on_update_version_badge_clicked)
+        try:
+            self.titleBar.hBoxLayout.insertWidget(4, badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        except Exception:
+            self.titleBar.hBoxLayout.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.updateVersionBadge = badge
+        return badge
+
+    def _refreshWindowTitleBar(self):
+        if hasattr(self, 'titleBar') and hasattr(self.titleBar, 'setTitle'):
+            self.titleBar.setTitle(self._baseTitleBarText())
+
+        badge = self._ensureUpdateVersionBadge()
+        if badge is None:
+            return
+
+        badge.setStyleSheet(f"color: {themeColor().name()}; font-weight: 700;")
+        if self.detected_update_version:
+            badge.setText(tr('检测到新版本：{version}').format(version=self.detected_update_version))
+            badge.show()
+        else:
+            badge.hide()
+
+    def setDetectedUpdateVersion(self, version: str | None):
+        self.detected_update_version = version or None
+        self._refreshWindowTitleBar()
+        if hasattr(self, 'logInterface') and self.logInterface:
+            try:
+                self.logInterface.setDetectedUpdateVersion(self.detected_update_version)
+            except Exception:
+                pass
+
+    def _on_theme_changed(self):
+        self._refreshWindowTitleBar()
+
+    def _on_update_version_badge_clicked(self):
+        if self.detected_update_version:
+            checkUpdate(self)
 
     def initInterface(self):
         self.homeInterface = HomeInterface(self)
@@ -156,6 +245,7 @@ class MainWindow(MSFluentWindow):
         # self.changelogInterface = ChangelogInterface(self)
         self.warpInterface = WarpInterface(self)
         self.toolsInterface = ToolsInterface(self)
+        self.workflowInterface = WorkflowInterface(self)
         self.logInterface = LogInterface(self)
         self.settingInterface = SettingInterface(self)
 
@@ -174,6 +264,7 @@ class MainWindow(MSFluentWindow):
         # self.addSubInterface(self.changelogInterface, FIF.UPDATE, '更新日志')
         self.addSubInterface(self.warpInterface, FIF.SHARE, tr('抽卡记录'))
         self.addSubInterface(self.toolsInterface, FIF.DEVELOPER_TOOLS, tr('工具箱'))
+        self.addSubInterface(self.workflowInterface, FIF.CODE, tr('流程编排'))
 
         self.navigationInterface.addWidget(
             'startGameButton',
@@ -323,6 +414,8 @@ class MainWindow(MSFluentWindow):
             # 切换到日志界面
             self.switchTo(self.logInterface)
             return
+        # 静默检查更新
+        checkUpdate(self, silent=True)
         # 切换到日志界面
         self.switchTo(self.logInterface)
         # 启动任务
@@ -339,19 +432,174 @@ class MainWindow(MSFluentWindow):
             self.logInterface.updateHotkey()
 
     def _on_ui_language_changed(self, lang_code: str):
-        """处理 UI 语言改变信号：显示需要重启的提示"""
+        """热重载 UI 语言，无需重启。
+        流程：更新翻译字典 → 禁用导航栏 → 切到安全锚点 → 等动画结束 → 分步重建界面。
+        """
+        from PySide6.QtCore import QTimer
         try:
-            InfoBar.success(
-                title=tr('更新成功'),
-                content=tr('配置在重启软件后生效'),
+            from module.localization import load_language, detect_lang
+
+            actual_lang = lang_code
+            if actual_lang == 'auto':
+                actual_lang = detect_lang()
+
+            cfg.ui_language_now = actual_lang
+            load_language(actual_lang)
+            self._reinstall_fluent_translator(actual_lang)
+            self._refreshWindowTitleBar()
+            if hasattr(self, 'logInterface') and self.logInterface:
+                self.logInterface.setDetectedUpdateVersion(self.detected_update_version)
+
+            # 禁用导航栏，防止重建期间误操作
+            self.navigationInterface.setEnabled(False)
+
+            # 先切到日志界面（安全锚点）；等 350ms 让导航动画完全结束后再重建
+            self.switchTo(self.logInterface)
+            QTimer.singleShot(350, self._rebuild_interfaces_for_language)
+        except Exception as e:
+            self.navigationInterface.setEnabled(True)
+            InfoBar.warning(
+                title='语言切换失败',
+                content=str(e),
                 orient=Qt.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
-                duration=2000,
+                duration=3000,
                 parent=self
             )
-        except Exception:
-            pass
+
+    def _reinstall_fluent_translator(self, lang_code: str):
+        """重新安装 FluentTranslator 以使 Qt 内置组件翻译同步更新"""
+        from PySide6.QtCore import QLocale
+        from qfluentwidgets import FluentTranslator
+        app = QApplication.instance()
+        if hasattr(self, '_fluent_translator') and self._fluent_translator:
+            try:
+                app.removeTranslator(self._fluent_translator)
+            except Exception:
+                pass
+        if lang_code == 'zh_TW':
+            self._fluent_translator = FluentTranslator(QLocale(QLocale.Language.Chinese, QLocale.Country.Taiwan))
+        elif lang_code == 'ja_JP':
+            self._fluent_translator = FluentTranslator(QLocale(QLocale.Language.Japanese, QLocale.Country.Japan))
+        elif lang_code == 'ko_KR':
+            self._fluent_translator = FluentTranslator(QLocale(QLocale.Language.Korean, QLocale.Country.SouthKorea))
+        elif lang_code == 'en_US':
+            self._fluent_translator = FluentTranslator(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+        else:
+            self._fluent_translator = FluentTranslator(QLocale(QLocale.Language.Chinese, QLocale.Country.China))
+        app.installTranslator(self._fluent_translator)
+
+    def _rebuild_interfaces_for_language(self):
+        """同步重建所有子界面以应用新语言。
+
+        性能策略：
+        - TOP 界面（Home/Help/Warp/Tools）构造轻量，先重建完毕
+        - 重建完 TOP 界面后调用一次 processEvents()，让 Windows 消息队列清空，
+          防止在最重的 SettingInterface 构建期间出现"(不响应)"标题
+        - SettingInterface 构建完成后立即 switchTo 并还原光标
+        - 全程不重新连接信号（initInterface 中已连接且永久有效）
+        """
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()  # 立即刷新，让光标实际渲染后再开始重建
+        try:
+            # ── 轻量 TOP 界面：逐一移除旧→添加新 ───────────────────────
+            top_specs = [
+                ('homeInterface', FIF.HOME, tr('主页'), HomeInterface),
+                ('helpInterface', FIF.BOOK_SHELF, tr('帮助'), HelpInterface),
+                ('warpInterface', FIF.SHARE, tr('抽卡记录'), WarpInterface),
+                ('toolsInterface', FIF.DEVELOPER_TOOLS, tr('工具箱'), ToolsInterface),
+                ('workflowInterface', FIF.CODE, tr('流程编排'), WorkflowInterface),
+            ]
+            for attr, icon, label, cls in top_specs:
+                old = getattr(self, attr, None)
+                if old is not None:
+                    try:
+                        route_key = old.objectName()
+                        if route_key in self.navigationInterface.items:
+                            self.navigationInterface.items[route_key].hide()
+                        self.removeInterface(old, isDelete=True)
+                    except Exception:
+                        pass
+                try:
+                    new_iface = cls(self)
+                    setattr(self, attr, new_iface)
+                    self.addSubInterface(new_iface, icon, label)
+                except Exception:
+                    pass
+
+            # ── 轻量界面完成后清空 Windows 消息队列 ──────────────────
+            # 调用一次 processEvents()，避免在随后最重的 SettingInterface
+            # 构建期间因 WM_PAINT 积压 >5s 而触发系统"(不响应)"弹窗。
+            # 仅此一次，不在循环中调用，不会引起多余重绘。
+            QApplication.processEvents()
+
+            # ── 日志界面：保留进程，只更新导航标签 ──────────────────
+            try:
+                log_key = self.logInterface.objectName()
+                log_item = self.navigationInterface.items.get(log_key)
+                if log_item is not None and hasattr(log_item, 'setText'):
+                    log_item.setText(tr('日志'))
+            except Exception:
+                pass
+
+            # ── 设置界面（最重）：移除旧→创建新 ──────────────────────
+            old_setting = self.settingInterface
+            try:
+                route_key = old_setting.objectName()
+                if route_key in self.navigationInterface.items:
+                    self.navigationInterface.items[route_key].hide()
+                self.removeInterface(old_setting, isDelete=True)
+            except Exception:
+                pass
+            try:
+                self.settingInterface = SettingInterface(self)
+                self.addSubInterface(
+                    self.settingInterface, FIF.SETTING, tr('设置'),
+                    position=NavigationItemPosition.BOTTOM
+                )
+            except Exception:
+                pass
+
+            # ── 导航栏自定义按钮文本 ──────────────────────────────────
+            for widget_key, text_key in [('startGameButton', '启动游戏'), ('avatar', '赞赏')]:
+                try:
+                    btn = self.navigationInterface.widget(widget_key)
+                    if btn and hasattr(btn, 'setText'):
+                        btn.setText(tr(text_key))
+                except Exception:
+                    pass
+
+            self.navigationInterface.setEnabled(True)
+            try:
+                self.switchTo(self.settingInterface)
+            except Exception:
+                pass
+
+            InfoBar.success(
+                title=tr('更新成功'),
+                content='',
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=1500,
+                parent=self
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            InfoBar.warning(
+                title=tr('配置加载失败'),
+                content=str(e),
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+        finally:
+            self.navigationInterface.setEnabled(True)
+            QApplication.restoreOverrideCursor()
 
     def _onTaskFinished(self, exit_code):
         """处理任务完成信号"""
@@ -369,15 +617,21 @@ class MainWindow(MSFluentWindow):
         self._do_quit()
 
     def _saveWindowState(self):
-        """保存窗口尺寸和最大化状态到配置文件"""
+        """保存窗口尺寸、位置和最大化状态到配置文件"""
         try:
             is_maximized = self.isMaximized()
             cfg.set_value('window_maximized', is_maximized)
 
-            # 只在非最大化状态下保存窗口尺寸
+            window_memory = cfg.get_value('window_memory', 'size')
+
+            # 只在非最大化状态下保存窗口尺寸和位置
             if not is_maximized:
-                cfg.set_value('window_width', self.width())
-                cfg.set_value('window_height', self.height())
+                if window_memory in ('size', 'size_and_position'):
+                    cfg.set_value('window_width', self.width())
+                    cfg.set_value('window_height', self.height())
+                if window_memory in ('position', 'size_and_position'):
+                    cfg.set_value('window_x', self.x())
+                    cfg.set_value('window_y', self.y())
         except Exception:
             pass
 
@@ -397,9 +651,9 @@ class MainWindow(MSFluentWindow):
             except Exception:
                 pass
 
-            # 更新日志界面的热键
+            # 更新日志界面的热键与日志悬浮窗开关
             if hasattr(self, 'logInterface'):
-                self.logInterface.updateHotkey()
+                self.logInterface.reloadConfigState()
 
             # 保存旧的设置界面引用
             old_setting_interface = self.settingInterface

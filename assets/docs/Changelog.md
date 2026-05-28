@@ -1,5 +1,112 @@
 # 更新日志
 
+## v2026.5.27
+- 支持开拓者·欢愉 [#1085](https://github.com/moesnow/March7thAssistant/pull/1085) @shing-yu
+- 支持位面饰品提取自动切换队伍 [#938](https://github.com/moesnow/March7thAssistant/pull/938) @alex3236
+- 云游戏支持使用付费时长以及战斗超时处理 [#1051](https://github.com/moesnow/March7thAssistant/pull/1051) [#1059](https://github.com/moesnow/March7thAssistant/pull/1059) @shing-yu
+- Telegram 推送支持 Topics 群组
+- Bark 推送新增 base_url 参数支持自定义服务器地址
+- 企业微信应用通知新增自定义 URL 支持 [#1072](https://github.com/moesnow/March7thAssistant/pull/1072) @shing-yu
+- 新增对自动切换视角弹窗的支持 [#1084](https://github.com/moesnow/March7thAssistant/pull/1084) @shing-yu
+- 修复模拟宇宙快速启动实际执行类型和描述不一致
+- 优化性能和稳定性并修复若干已知问题
+- [欢迎关注我们的B站账号，获取最新动态和教程](https://space.bilibili.com/3706960664857075)
+
+## v2026.5.12
+- 货币战争新增 “希儿” 策略（测试版）
+- 新增每月自动合成自塑尘脂、兑换专票通票等超值商品
+- 支持主动完成每日实训任务派遣委托
+- 支持遐蝶皮肤「幽梦翩跹」 [#1048](https://github.com/moesnow/March7thAssistant/issues/1048) @shing-yu
+- 帮助页面样式优化 [#1044](https://github.com/moesnow/March7thAssistant/issues/1044) @Because66666
+- 修复历战余响提前解锁提示框影响识别 [#1047](https://github.com/moesnow/March7thAssistant/issues/1047) @shing-yu
+- Linux/macOS 浏览器关闭逻辑优化 [#1033](https://github.com/moesnow/March7thAssistant/issues/1033) @shing-yu @stelahaveno
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.5.6
+- 新增 “日常” 任务（合并每日实训和体力）以及 “清体力” 总开关
+- 新增 “定时任务” 支持链式启动
+- 新增 “流程编排” 支持添加终止流程步骤
+- 新增 “调试模式” 功能，支持在 Windows 上实时绘制检测范围框
+- 新增支持修改开/关 “自动战斗” 的按键
+- 优化了自动对话功能
+- 优化了帮助页面支持复制和自动换行 [#1035](https://github.com/moesnow/March7thAssistant/issues/1035) @Because66666
+- 差分宇宙现在会记录今日和每周的运行次数
+- 修复了 “流程编排” 按下操作会自动松开以及不支持中文路径模板图片
+- 修复游戏已启动时不会检查分辨率是否正确
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.5.1
+- 新增 “流程编排” 功能，支持创建简单的自动化流程
+- 支持饰品提取和历战余响连续挑战 [#1014](https://github.com/moesnow/March7thAssistant/issues/1014) @CL4R3T
+- 修复定时任务中的外部程序对 BetterGI 的支持 [#1011](https://github.com/moesnow/March7thAssistant/pull/1011) @Daydreamer114
+- 优化了云游戏的截图性能，提高了差分宇宙任务的稳定性
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.4.27
+- 支持 4.2 新角色和副本
+- 针对A840对阿格莱雅策略进行了优化
+- 修复了货币战争的若干已知问题
+- 更新了使用教程和常见问题适配当前版本
+- 优化自动对话功能，提高稳定性，新增短信支持
+- 培养目标支持当目标仅剩下遗器时改用自定义副本
+- 新增活动热点通知，包含剩余天数和完成情况 [#1007](https://github.com/moesnow/March7thAssistant/pull/1007) @g60cBQ
+- 更新程序支持命令行参数在最新版本时自动退出 [#1006](https://github.com/moesnow/March7thAssistant/pull/1006) @xinjiajuan
+- 新增 uv 源码工作流 [#1003](https://github.com/moesnow/March7thAssistant/pull/1003) @Bot1822
+- 修复无法正常进入活动和漫游签证界面
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.4.23
+- 锄大地（[Fhoe-Rail](https://github.com/linruowuyin/Fhoe-Rail/)）已经支持二相乐园啦~
+- 货币战争添加“当前职级”选项
+- 优化了差分宇宙事件关卡的处理逻辑
+- 培养目标获取新增 “掉落物识别” 方案，遇到异常时可尝试切换 [#948](https://github.com/moesnow/March7thAssistant/pull/948) @g60cBQ
+- 增加 OCR 模式配置，支持多种加速选项，并优化了内存占用
+- 修复因周期积分线将合并导致的差分宇宙异常
+- 修复背包满仓后会反复尝试分解遗器
+- 修复无法正常进入 “邮件” 页面
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.4.20
+- 货币战争新增职级选择
+- 货币战争新增阿格莱雅策略
+- 货币战争支持开拓者•记忆（需手动配置名称）
+- 现在差分宇宙在缺少队伍时会自动尝试选择队伍1
+- 新增短信奖励领取功能 [#964](https://github.com/moesnow/March7thAssistant/pull/964) @g60cBQ
+- 新增更新支持手动配置代理
+- 主页新增编辑按钮支持自定义卡片
+- 添加命令行参数允许启动时不立即执行 [#970](https://github.com/moesnow/March7thAssistant/pull/970) @sgpublic
+- 修复部分文字OCR识别错误 [#966](https://github.com/moesnow/March7thAssistant/pull/966) [#988](https://github.com/moesnow/March7thAssistant/pull/988) @JackyTang1
+- 优化运行时内存峰值占用，减少发生内存溢出的情况
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.4.14
+- 支持在游戏内显示日志
+- 差分宇宙支持事件类型关卡
+- 差分宇宙支持自定义站点选择优先级
+- 差分宇宙可选星阶模式 [#953](https://github.com/moesnow/March7thAssistant/pull/953) @JackyTang1
+- 图形界面语言切换后支持热重载&设置选项卡支持横向滚动 [#962](https://github.com/moesnow/March7thAssistant/pull/962) @360NENZ
+- 优化和修复差分宇宙若干已知问题
+- 修复通过抽卡记录复制链接后在小程序内无法使用
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.4.9
+- 适配差分宇宙-乐园漫记
+- 货币战争新增速通模式
+- 适配货币战争 “专家邀请函” 弹窗
+- 云游戏支持检测剩余时长 [#931](https://github.com/moesnow/March7thAssistant/pull/931) @awsl1110
+- 自动切换队伍支持所有预设编号 [#937](https://github.com/moesnow/March7thAssistant/pull/937) @Alex3236
+- 优化和修复货币战争若干已知问题
+- 优化和修复差分宇宙若干已知问题
+- 图形界面支持自定义记忆窗口大小或位置
+- 优化性能和稳定性并修复若干已知问题
+
+## v2026.3.25
+- 支持 4.1 版本新增关卡
+- 支持通知合并进行消息推送
+- 修复偶现无法正确跳过剧情
+- 修复 bilibili 服无法正常进入游戏
+- 优化性能和稳定性并修复若干已知问题
+
 ## v2026.3.13
 - 体力计划和定时任务新增了排序功能
 - 允许为特定的副本配置不同的出战队伍 [#913](https://github.com/moesnow/March7thAssistant/pull/913) @g60cBQ

@@ -25,6 +25,12 @@
                     "time.sleep(2)",
                     "auto.click_element('./assets/images/share/warp/stellar_warp.png', 'image', 0.9)"
                 ]
+            },
+            {
+                "target_screen": "incoming_message",
+                "actions_list": [
+                    "auto.press_key('p')"
+                ]
             }
         ]
     },
@@ -78,8 +84,7 @@
             {
                 "target_screen": "mail",
                 "actions_list": [
-                    "auto.click_element('./assets/images/share/menu/mail.png', 'image', 0.8, crop=(1823.0 / 1920, 224.0 / 1080, 91.0 / 1920, 92.0 / 1080))",
-                    "auto.click_element('./assets/images/share/menu/mail_reward.png', 'image', 3000000, crop=(1823.0 / 1920, 224.0 / 1080, 91.0 / 1920, 92.0 / 1080))"
+                    "auto.click_element((1846 / 1920, 253 / 1080, 43 / 1920, 37 / 1080), 'crop')"
                 ]
             },
             {
@@ -162,7 +167,7 @@
             {
                 "target_screen": "achievement",
                 "actions_list": [
-                    "auto.click_element('./assets/images/share/menu/achievement_reward.png', 'image', 2000000, crop=(1264.0 / 1920, 286.0 / 1080, 546.0 / 1920, 746.0 / 1080))"
+                    "auto.click_element('./assets/images/share/menu/achievement.png', 'image', 2000000, crop=(1264.0 / 1920, 286.0 / 1080, 546.0 / 1920, 746.0 / 1080))"
                 ]
             }
         ]
@@ -480,6 +485,9 @@
                     "auto.click_element('差分宇宙', 'text', None, 10, crop=(238.0 / 1920, 257.0 / 1080, 449.0 / 1920, 525.0 / 1080))",
                     "time.sleep(1)",
                     "auto.click_element('前往参与', 'text', None, 10, crop=(684.0 / 1920, 278.0 / 1080, 981.0 / 1920, 656.0 / 1080))"
+                ],
+                "actions_list_on_timeout": [
+                    "auto.press_key('f')"
                 ]
             },
             {
@@ -602,6 +610,67 @@
         "actions": [
             {
                 "target_screen": "main",
+                "actions_list": [
+                    "auto.press_key('esc')"
+                ]
+            },
+            {
+                "target_screen": "divergent_mode_select",
+                "actions_list": [
+                    "auto.click_element('./assets/images/screen/universe/homepage.png', 'image', 0.9, 10)",
+                    "time.sleep(2)"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "差分宇宙-模式选择",
+        "id": "divergent_mode_select",
+        "image_path": "./assets/images/screen/universe/divergent_mode_select.png",
+        "actions": [
+            {
+                "target_screen": "divergent_main",
+                "actions_list": [
+                    "auto.press_key('esc')"
+                ]
+            },
+            {
+                "target_screen": "divergent_mode_select_normal",
+                "actions_list": [
+                    "auto.click_element('常规演算', 'text', None, 10, crop=(39 / 1920, 291 / 1080, 672 / 1920, 431 / 1080))"
+                ]
+            },
+            {
+                "target_screen": "divergent_mode_select_cycle",
+                "actions_list": [
+                    "auto.click_element('周期演算', 'text', None, 10, crop=(39 / 1920, 291 / 1080, 672 / 1920, 431 / 1080))"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "差分宇宙-常规演算",
+        "id": "divergent_mode_select_normal",
+        "image_path": "./assets/images/screen/universe/mode_select_normal.png",
+        "actions": [
+            {
+                "target_screen": "divergent_mode_select",
+                "actions_list": [
+                    "auto.press_key('esc')"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "差分宇宙-周期演算",
+        "id": "divergent_mode_select_cycle",
+        "image_path": [
+            "./assets/images/screen/universe/mode_select_cycle.png",
+            "./assets/images/screen/universe/mode_select_cycle2.png"
+        ],
+        "actions": [
+            {
+                "target_screen": "divergent_mode_select",
                 "actions_list": [
                     "auto.press_key('esc')"
                 ]
@@ -812,8 +881,8 @@
         ]
     },
     {
-        "name":"背包-光锥",
-        "id":"bag_lc",
+        "name": "背包-光锥",
+        "id": "bag_lc",
         "image_path": "./assets/images/screen/bag/bag_lc.png",
         "actions": [
             {
@@ -924,6 +993,14 @@
                 "actions_list": [
                     "auto.press_key('esc')"
                 ]
+            },
+            {
+                "target_screen": "reward_guide",
+                "actions_list": [
+                    "time.sleep(1)",
+                    "auto.click_element('./assets/images/screen/activity.png', 'image', 0.9, 5)",
+                    "auto.click_element('./assets/images/screen/activity_2.png', 'image', 0.9, 1)"
+                ]
             }
         ]
     },
@@ -1018,6 +1095,32 @@
                 "actions_list": [
                     "auto.press_key('esc')",
                     "time.sleep(1)",
+                    "auto.press_key('esc')"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "新消息通知",
+        "id": "incoming_message",
+        "image_path": "./assets/images/screen/incoming_message.png",
+        "actions": [
+            {
+                "target_screen": "main",
+                "actions_list": [
+                    "auto.press_key('esc')"
+                ]
+            }
+        ]
+    },
+    {
+        "name": "奖励指南",
+        "id": "reward_guide",
+        "image_path": "./assets/images/screen/reward_guide.png",
+        "actions": [
+            {
+                "target_screen": "activity",
+                "actions_list": [
                     "auto.press_key('esc')"
                 ]
             }

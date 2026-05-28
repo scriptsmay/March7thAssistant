@@ -29,6 +29,11 @@ def parse_args():
     # 可选参数组
     optional = parser.add_argument_group('可选参数')
     optional.add_argument(
+        '--no-run-immediately',
+        action='store_true',
+        help='禁用立即运行'
+    )
+    optional.add_argument(
         '-h', '--help',
         action='help',
         help='显示此帮助信息并退出'
@@ -37,6 +42,16 @@ def parse_args():
         '-l', '--list',
         action='store_true',
         help='列出所有可用的任务'
+    )
+    optional.add_argument(
+        '--workflow-name',
+        metavar='NAME',
+        help='按名称运行流程'
+    )
+    optional.add_argument(
+        '--workflow-step-path',
+        metavar='PATH',
+        help='仅执行指定步骤路径，例如 0/1/2'
     )
 
     args = parser.parse_args()
@@ -53,6 +68,12 @@ def parse_args():
         print("  执行每日实训:           March7th Assistant.exe daily")
         sys.exit(0)
 
+    if args.task and args.workflow_name:
+        parser.error('不能同时指定 TASK 和 --workflow-name')
+
+    if args.workflow_step_path and not args.workflow_name:
+        parser.error('--workflow-step-path 需要配合 --workflow-name 使用')
+
     return args
 
 
@@ -61,6 +82,7 @@ args = parse_args()
 
 import atexit
 import base64
+import time
 
 if sys.platform == 'win32':
     import pyuac
@@ -74,14 +96,18 @@ if sys.platform == 'win32':
 from module.config import cfg
 from module.logger import log
 from module.notification import notif
+from module.telemetry import telemetry
 from module.notification.notification import NotificationLevel
 from module.ocr import ocr
+from module.workflow import WorkflowRunner, load_workflow_execution_payload
 from utils.screenshot_util import save_error_screenshot
 
 import tasks.game as game
+from module.game import cloud_game
 import tasks.reward as reward
 import tasks.challenge as challenge
 import tasks.version as version
+import tasks.version.app_update as app_update_task
 
 from tasks.daily.daily import Daily
 from tasks.daily.fight import Fight
@@ -89,10 +115,18 @@ from tasks.power.power import Power
 from tasks.weekly.universe import Universe
 from tasks.daily.redemption import Redemption
 from tasks.weekly.currency_wars import CurrencyWars
+from tasks.weekly.divergent_universe import DivergentUniverse
 from tasks.base.genshin_starRail_fps_unlocker import Genshin_StarRail_fps_unlocker
 
 
 from utils.console import pause_on_error, pause_on_success, pause_always, is_docker_started
+
+telemetry.init(
+    enabled=cfg.get_value("telemetry_enable", True),
+    telemetry_id=cfg.get_value("telemetry_id", ""),
+    telemetry_secret=cfg.get_value("telemetry_secret", ""),
+    version=cfg.version,
+)
 
 
 def first_run():
@@ -102,19 +136,37 @@ def first_run():
         sys.exit(0)
 
 
-def run_main_actions():
+def run_main_actions(no_run_immediately=False):
+    is_first_run = no_run_immediately
     while True:
-        version.start()
-        game.start()
-        reward.start_specific("dispatch")
-        Daily.start()
-        reward.start()
-        game.stop(True)
+        if is_first_run:
+            is_first_run = False
+            game.after_finish_is_loop()
+            continue
+        if cfg.notify_merge:
+            notif.start_batch()
+        telemetry.track_task_start("main")
+        main_start_time = time.time()
+        try:
+            version.start()
+            game.start()
+            Daily.start()
+            reward.start()
+            telemetry.track_task_complete("main", True, time.time() - main_start_time)
+            game.stop(True)
+        except Exception:
+            telemetry.track_task_complete("main", False, time.time() - main_start_time)
+            raise
 
 
 def run_sub_task(action):
-    if action != "currencywarstemp":
+    if action != "currencywarstemp" and action != "divergenttemp":
         game.start()
+    else:
+        if cfg.cloud_game_enable:
+            if not cloud_game.start_game_process():
+                raise Exception("启动或连接浏览器失败")
+        game.switch_to_game()
 
     def currencywars(mode=None):
         war = CurrencyWars()
@@ -126,14 +178,28 @@ def run_sub_task(action):
         else:
             war.start()
 
+    def divergent(mode=None):
+        universe = DivergentUniverse()
+        if mode == "loop":
+            while True:
+                universe.start()
+        elif mode == "temp":
+            universe.loop()
+        else:
+            universe.start()
+
     sub_tasks = {
+        "routine": Daily.routine,
         "daily": lambda: (Daily.run(), reward.start()),
         "power": Power.run,
         "currencywars": lambda: currencywars(),
         "currencywarsloop": lambda: currencywars("loop"),
         "currencywarstemp": lambda: currencywars("temp"),
+        "divergent": lambda: divergent(),
+        "divergentloop": lambda: divergent("loop"),
+        "divergenttemp": lambda: divergent("temp"),
         "fight": Fight.start,
-        "universe": Universe.start,
+        "universe": lambda: Universe.start(category="universe"),
         "forgottenhall": lambda: challenge.start("memoryofchaos"),
         "purefiction": lambda: challenge.start("purefiction"),
         "apocalyptic": lambda: challenge.start("apocalyptic"),
@@ -141,7 +207,14 @@ def run_sub_task(action):
     }
     task = sub_tasks.get(action)
     if task:
-        task()
+        telemetry.track_task_start(action)
+        task_start_time = time.time()
+        try:
+            task()
+            telemetry.track_task_complete(action, True, time.time() - task_start_time)
+        except Exception:
+            telemetry.track_task_complete(action, False, time.time() - task_start_time)
+            raise
     game.stop(False)
 
 
@@ -175,15 +248,28 @@ def run_notify_action():
     sys.exit(0)
 
 
-def main(action=None):
+def run_workflow_action(workflow_name: str, workflow_step_path=None):
+    workflow = load_workflow_execution_payload(workflow_name, workflow_step_path)
+    runner = WorkflowRunner(
+        log_callback=lambda message: print(message, flush=True),
+        mirror_to_project_log=False,
+    )
+    return runner.run(workflow)
+
+
+def main(action=None, no_run_immediately=False, workflow_name=None, workflow_step_path=None):
     first_run()
+    telemetry.track_startup()
+
+    if workflow_name:
+        return run_workflow_action(workflow_name, workflow_step_path)
 
     # 完整运行
     if action is None or action == "main":
-        run_main_actions()
+        run_main_actions(no_run_immediately)
 
     # 子任务
-    elif action in ["daily", "power", "currencywars", "currencywarsloop", "currencywarstemp", "fight", "universe", "forgottenhall", "purefiction", "apocalyptic", "redemption"]:
+    elif action in ["routine", "daily", "power", "currencywars", "currencywarsloop", "currencywarstemp", "divergent", "divergentloop", "divergenttemp", "fight", "universe", "forgottenhall", "purefiction", "apocalyptic", "redemption"]:
         run_sub_task(action)
 
     # 子任务 原生图形界面
@@ -196,6 +282,9 @@ def main(action=None):
 
     elif action == "game":
         game.start()
+
+    elif action == "app_update":
+        app_update_task.start()
 
     elif action == "game_update":
         game.update_via_launcher()
@@ -214,22 +303,43 @@ def main(action=None):
 
 # 程序结束时的处理器
 def exit_handler():
-    """注册程序退出时的处理函数，用于清理OCR资源."""
+    """注册程序退出时的处理函数，用于清理OCR和调试资源."""
+    telemetry.shutdown()
     ocr.exit_ocr()
+    # 清理调试叠加层
+    try:
+        from module.automation import auto
+        auto.shutdown_debug()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
     try:
         atexit.register(exit_handler)
-        main(args.task) if args.task else main()
+        if args.workflow_name:
+            result = main(
+                no_run_immediately=args.no_run_immediately,
+                workflow_name=args.workflow_name,
+                workflow_step_path=args.workflow_step_path,
+            )
+        elif args.task:
+            result = main(action=args.task, no_run_immediately=args.no_run_immediately)
+        else:
+            result = main(no_run_immediately=args.no_run_immediately)
+        if result is False:
+            sys.exit(1)
     except KeyboardInterrupt:
         log.error("发生错误: 手动强制停止")
         pause_on_error()
         sys.exit(1)
     except Exception as e:
+        telemetry.track_error(type(e).__name__, str(e))
         log.error(cfg.notify_template['ErrorOccurred'].format(error=e))
         # 保存错误截图
         screenshot_path = save_error_screenshot(log)
+        # 合并模式下先发送已收集的通知
+        notif.flush_batch()
         # 发送通知，如果有截图则附带截图
         notify_kwargs = {
             'content': cfg.notify_template['ErrorOccurred'].format(error=e),

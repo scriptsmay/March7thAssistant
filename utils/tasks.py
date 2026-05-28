@@ -8,11 +8,14 @@ load_language()
 # 可用的任务列表（任务ID -> 任务名称）
 AVAILABLE_TASKS = {
     "main": tr("完整运行"),
+    "routine": tr("日常"),
     "daily": tr("每日实训"),
     "power": tr("清体力"),
     "game_update": tr("更新游戏"),
     "game_pre_download": tr("预下载游戏"),
+    "app_update": tr("更新三月七小助手"),
     "currencywars": tr("货币战争"),
+    "divergent": tr("差分宇宙"),
     "fight": tr("锄大地"),
     "universe": tr("模拟宇宙"),
     "forgottenhall": tr("混沌回忆"),
@@ -20,6 +23,8 @@ AVAILABLE_TASKS = {
     "apocalyptic": tr("末日幻影"),
     "currencywarsloop": tr("货币战争循环"),
     "currencywarstemp": tr("货币战争中途接管"),
+    "divergentloop": tr("差分宇宙循环"),
+    "divergenttemp": tr("差分宇宙中途接管"),
     "universe_gui": tr("模拟宇宙原生界面"),
     "fight_gui": tr("锄大地原生界面"),
     "universe_update": tr("模拟宇宙更新"),
