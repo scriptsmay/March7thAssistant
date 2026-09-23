@@ -133,6 +133,11 @@
                     "auto.click_element('./assets/images/share/menu/bag.png', 'image', 2000000, crop=(1264.0 / 1920, 286.0 / 1080, 546.0 / 1920, 746.0 / 1080))",
                     "time.sleep(2)",
                     "auto.click_element('./assets/images/share/menu/bag_consumables.png', 'image', 0.9, 2)"
+                ],
+                "actions_list_on_timeout": [
+                    "auto.click_element('./assets/images/zh_CN/base/confirm.png', 'image', 0.9)",
+                    "time.sleep(2)",
+                    "auto.click_element('./assets/images/share/menu/bag_consumables.png', 'image', 0.9, 2)"
                 ]
             },
             {
@@ -141,12 +146,22 @@
                     "auto.click_element('./assets/images/share/menu/bag.png', 'image', 2000000, crop=(1264.0 / 1920, 286.0 / 1080, 546.0 / 1920, 746.0 / 1080))",
                     "time.sleep(2)",
                     "auto.click_element('./assets/images/share/menu/bag_relicset.png', 'image', 0.9, 2)"
+                ],
+                "actions_list_on_timeout": [
+                    "auto.click_element('./assets/images/zh_CN/base/confirm.png', 'image', 0.9)",
+                    "time.sleep(2)",
+                    "auto.click_element('./assets/images/share/menu/bag_relicset.png', 'image', 0.9, 2)"
                 ]
             },
             {
                 "target_screen": "bag_lc",
                 "actions_list": [
                     "auto.click_element('./assets/images/share/menu/bag.png', 'image', 2000000, crop=(1264.0 / 1920, 286.0 / 1080, 546.0 / 1920, 746.0 / 1080))",
+                    "time.sleep(2)",
+                    "auto.click_element('./assets/images/share/menu/bag_lc.png', 'image', 0.9, 2)"
+                ],
+                "actions_list_on_timeout": [
+                    "auto.click_element('./assets/images/zh_CN/base/confirm.png', 'image', 0.9)",
                     "time.sleep(2)",
                     "auto.click_element('./assets/images/share/menu/bag_lc.png', 'image', 0.9, 2)"
                 ]
@@ -477,6 +492,9 @@
                     "auto.click_element('货币战争', 'text', None, 10, crop=(238.0 / 1920, 257.0 / 1080, 449.0 / 1920, 525.0 / 1080))",
                     "time.sleep(1)",
                     "auto.click_element('前往参与', 'text', None, 10, crop=(684.0 / 1920, 278.0 / 1080, 981.0 / 1920, 656.0 / 1080))"
+                ],
+                "actions_list_on_timeout": [
+                    "auto.press_key('f')"
                 ]
             },
             {
@@ -1093,8 +1111,6 @@
             {
                 "target_screen": "menu",
                 "actions_list": [
-                    "auto.press_key('esc')",
-                    "time.sleep(1)",
                     "auto.press_key('esc')"
                 ]
             }

@@ -9,6 +9,7 @@ import requests
 import time
 import io
 import ctypes
+import socket
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, SessionNotCreatedException, StaleElementReferenceException
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -32,12 +33,34 @@ from module.logger import Logger
 from utils.console import is_docker_started
 
 
+class CloudGameLoginTimeoutError(RuntimeError):
+    """云游戏登录等待超时，不应按启动失败重试。"""
+
+
 class CloudGameController(GameControllerBase):
     COOKIE_PATH = "settings/cookies.enc"          # Cookies 保存地址（仅用于调试）
     GAME_URL = "https://sr.mihoyo.com/cloud"            # 游戏地址
     BROWSER_TAG = "--march-7th-assistant-sr-cloud-game"  # 自定义浏览器参数作为标识，用于识别哪些浏览器进程属于三月七小助手
     BROWSER_INSTALL_PATH = os.path.join(os.getcwd(), "3rdparty", "WebBrowser")  # 浏览器安装路径
     INTEGRATED_BROWSER_VERSION = "140.0.7339.207"      # 浏览器版本
+    DISABLE_POINTER_LOCK_SCRIPT = """
+        (() => {
+            const blocked = function () {
+                return Promise.reject(new DOMException(
+                    'Pointer Lock is disabled in background mode.',
+                    'NotAllowedError'
+                ));
+            };
+            Object.defineProperty(Element.prototype, 'requestPointerLock', {
+                configurable: true,
+                writable: true,
+                value: blocked,
+            });
+            if (document.pointerLockElement && document.exitPointerLock) {
+                document.exitPointerLock();
+            }
+        })();
+    """
 
     @staticmethod
     def _get_platform_dir() -> str:
@@ -147,7 +170,7 @@ class CloudGameController(GameControllerBase):
             except TimeoutException:
                 pass
 
-        raise Exception("页面加载失败，多次刷新无效。")
+        raise ConnectionError("页面加载失败，多次刷新无效。")
 
     def _confirm_viewport_resolution(self) -> None:
         """
@@ -159,6 +182,20 @@ class CloudGameController(GameControllerBase):
             "deviceScaleFactor": 1,
             "mobile": False
         })
+
+    def _configure_pointer_lock(self, headless: bool) -> None:
+        """无窗口运行时禁止网页锁定系统鼠标指针。"""
+        if not headless or not self.driver:
+            return
+
+        try:
+            self.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": self.DISABLE_POINTER_LOCK_SCRIPT,
+                "runImmediately": True,
+            })
+            self.log_debug("无窗口模式已禁用 Pointer Lock")
+        except Exception as e:
+            self.log_warning(f"无窗口模式禁用 Pointer Lock 失败: {e}")
 
     def _prepare_browser_and_driver(self, browser_type: str, integrated: bool) -> tuple[str, str]:
         self.user_profile_path = os.path.join(self.BROWSER_INSTALL_PATH, "UserProfile", self.cfg.browser_type.capitalize())
@@ -196,7 +233,7 @@ class CloudGameController(GameControllerBase):
                     self.log_info("正在下载浏览器和驱动...")
                     SeleniumManager().binary_paths(args)
                 except WebDriverException as e:
-                    raise Exception(f"浏览器和驱动下载失败：{e}")
+                    raise RuntimeError(f"浏览器和驱动下载失败：{e}")
         else:
             # 尝试在本地查找浏览器
             args = ["--browser", browser_type,
@@ -215,12 +252,63 @@ class CloudGameController(GameControllerBase):
             try:
                 result = SeleniumManager().binary_paths(args)
             except WebDriverException as e:
-                raise Exception(f"查找 {browser_type} 浏览器出错：{e}")
+                raise RuntimeError(f"查找 {browser_type} 浏览器出错：{e}")
             browser_path = result["browser_path"]
             driver_path = result["driver_path"]
         self.log_debug(f"browser_path = {browser_path}")
         self.log_debug(f"driver_path = {driver_path}")
         return browser_path, driver_path
+
+    @staticmethod
+    def _get_port_bind_error(port: int) -> OSError | None:
+        """检查端口是否可绑定，返回原始错误供日志诊断"""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('127.0.0.1', port))
+            return None
+        except OSError as e:
+            return e
+
+    @classmethod
+    def _is_port_available(cls, port: int) -> bool:
+        """检查端口是否可绑定（真实 bind 试探，TIME_WAIT 也会判不可用）"""
+        return cls._get_port_bind_error(port) is None
+
+    @staticmethod
+    def _get_system_assigned_port() -> int:
+        """请求操作系统分配可用端口，避免连续端口段被整体保留"""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('127.0.0.1', 0))
+                return s.getsockname()[1]
+        except OSError as e:
+            error_code = getattr(e, "winerror", None) or e.errno
+            error_detail = f"错误码 {error_code}: {e}" if error_code is not None else str(e)
+            raise RuntimeError(f"系统自动分配可用端口失败（{error_detail}）") from e
+
+    @staticmethod
+    def _get_debug_port_from_cmdline(proc) -> int | None:
+        """从进程命令行解析 --remote-debugging-port 的真实端口"""
+        try:
+            for arg in proc.cmdline():
+                if arg.startswith("--remote-debugging-port="):
+                    return int(arg.split("=", 1)[1])
+        except (psutil.Error, ValueError, IndexError):
+            return None
+        return None
+
+    def _find_available_port(self, start_port: int, max_retry: int = 10) -> int:
+        """优先递增查找可用端口，连续端口均不可用时由系统分配"""
+        end_port = min(start_port + max_retry, 65536)
+        for port in range(start_port, end_port):
+            if self._is_port_available(port):
+                return port
+        port = self._get_system_assigned_port()
+        self.log_warning(
+            f"端口范围 {start_port}-{end_port - 1} 均不可用，"
+            f"将使用系统分配的端口 {port}"
+        )
+        return port
 
     def _get_browser_arguments(self, headless) -> list[str]:
         args = [
@@ -231,7 +319,6 @@ class CloudGameController(GameControllerBase):
             f"--force-device-scale-factor={float(self.cfg.browser_scale_factor)}",  # 设置缩放
             f"--app={self.GAME_URL}",   # 以应用模式启动
             "--disable-blink-features=AutomationControlled",  # 去除自动化痕迹，防止被人机验证
-            f"--remote-debugging-port={self.cfg.browser_debug_port}",   # 调试端口，可用于复用浏览器
         ]
         # if not headless:
         #     args += [
@@ -250,9 +337,7 @@ class CloudGameController(GameControllerBase):
                 "--headless=new",  # 无窗口模式
                 "--mute-audio",    # 后台静音
             ]
-            if is_docker_started():
-                # Docker 环境下需要额外参数
-                args.append("--no-sandbox")
+
         if self.cfg.cloud_game_fullscreen_enable and not headless:
             args.append("--start-fullscreen")  # 全屏启动
         args.extend(self.cfg.browser_launch_argument)  # 用户自定义参数
@@ -264,6 +349,22 @@ class CloudGameController(GameControllerBase):
         integrated = self.cfg.browser_type == "integrated"
         first_run = False
         browser_path, driver_path = self._prepare_browser_and_driver(browser_type, integrated)
+
+        # 端口可用性检测：若配置端口被占，递增找一个空闲端口
+        try:
+            configured_port = int(self.cfg.browser_debug_port)
+        except (TypeError, ValueError):
+            raise RuntimeError(f"browser_debug_port 配置无效: {self.cfg.browser_debug_port!r}")
+        if not 1 <= configured_port <= 65535:
+            raise RuntimeError(f"browser_debug_port 超出有效范围: {configured_port}")
+        actual_port = configured_port
+        bind_error = self._get_port_bind_error(configured_port)
+        if bind_error is not None:
+            self.log_warning(
+                f"端口 {configured_port} 无法绑定（{bind_error}），正在查找可用端口..."
+            )
+            actual_port = self._find_available_port(configured_port)
+            self.log_info(f"将使用端口 {actual_port} 启动浏览器")
 
         if not os.path.exists(self.user_profile_path):
             first_run = True
@@ -292,17 +393,26 @@ class CloudGameController(GameControllerBase):
         # 关掉 headless 不匹配的浏览器，防止端口冲突
         if self.close_all_m7a_browser(headless=not headless):
             self.log_info(f"已关闭正在运行的{'前台' if headless else '后台'}浏览器")
-        if self.get_m7a_browsers(headless=headless):
-            # 如果发现已经有浏览器，尝试直接连接
+        existing = self.get_m7a_browsers(headless=headless)
+        if existing:
+            # 从进程命令行解析真实调试端口（首次启动可能已回退到其它端口）
+            reconnect_port = self._get_debug_port_from_cmdline(existing[0]) or configured_port
             try:
-                options.debugger_address = f"127.0.0.1:{self.cfg.browser_debug_port}"
+                options.debugger_address = f"127.0.0.1:{reconnect_port}"
                 self.driver = webdriver_type(service=service, options=options)
+                self._configure_pointer_lock(headless)
                 self.log_info("已连接到现有浏览器")
-                return  # 连接成功，直接返回
+                return
             except Exception:
-                self.log_info(f"连接现有浏览器失败")
-                self.close_all_m7a_browser()  # 连接失败，关闭所有浏览器
-                options = None
+                self.log_info("连接现有浏览器失败")
+                self.close_all_m7a_browser()
+                # 重连失败后重建 options，避免 debugger_address 残留导致 Selenium 尝试重连而非启动新浏览器
+                if browser_type == "chrome":
+                    options = ChromeOptions()
+                elif browser_type == "edge":
+                    options = EdgeOptions()
+                else:
+                    options = ChromiumOptions()
 
         self.log_info(f"正在启动 {browser_type} 浏览器")
         options.binary_location = browser_path
@@ -312,6 +422,9 @@ class CloudGameController(GameControllerBase):
         # 设置浏览器启动参数
         for arg in self._get_browser_arguments(headless=headless):
             options.add_argument(arg)
+        options.add_argument(f"--remote-debugging-port={actual_port}")
+        if integrated or is_docker_started():  # 修复 Windows 部分情况下启动 Chrome 报错
+            options.add_argument("--no-sandbox")
 
         # 清理失效的断链 (Broken Symlinks) 防止浏览器无法启动
         if is_docker_started():
@@ -345,11 +458,12 @@ class CloudGameController(GameControllerBase):
                         self.log_warning(f"删除残留文件失败: {file_path}, 错误: {e}")
             self.log_error("如果设置了浏览器启动参数，请去掉所有浏览器启动参数后重试")
             self.log_error("如果仍然存在问题，请更换浏览器重试")
-            raise Exception("浏览器启动失败")
+            raise RuntimeError("浏览器启动失败")
         except Exception as e:
             self.log_error(f"浏览器启动失败: {e}")
-            raise Exception("浏览器启动失败")
+            raise RuntimeError("浏览器启动失败")
 
+        self._configure_pointer_lock(headless)
         if not self.cfg.cloud_game_fullscreen_enable:
             self.driver.set_window_size(1920, 1120)
         if first_run or not self.cfg.browser_persistent_enable:
@@ -453,8 +567,10 @@ class CloudGameController(GameControllerBase):
             free_selector = "#app > div.home-wrapper > div.welcome > div.welcome-wrapper > div > div.wel-card__content > div.wel-card__content--wallet > div.wallet-item.ft > div.left > span > span:nth-child(2)"
             paid_els = self.driver.find_elements(By.CSS_SELECTOR, paid_selector)
             free_els = self.driver.find_elements(By.CSS_SELECTOR, free_selector)
-            paid = int(paid_els[0].text.strip()) if paid_els else None
-            free = int(free_els[0].text.strip()) if free_els else None
+            paid_text = paid_els[0].text.strip() if paid_els else None
+            free_text = free_els[0].text.strip() if free_els else None
+            paid = int(paid_text) if paid_text and paid_text.isdigit() else None
+            free = int(free_text) if free_text and free_text.isdigit() else None
             return paid, free
         except StaleElementReferenceException:
             self.log_debug("获取剩余时长失败: 页面元素已更新，将重试")
@@ -488,6 +604,24 @@ class CloudGameController(GameControllerBase):
         except TimeoutException:
             self.log_warning("检测登录状态超时：未出现登录或未登录标志元素")
             return None
+
+    def _get_login_timeout_seconds(self) -> int:
+        try:
+            timeout_minutes = int(self.cfg.get_value("cloud_game_login_timeout", 10))
+        except (TypeError, ValueError):
+            timeout_minutes = 10
+        return max(1, timeout_minutes) * 60
+
+    def _abort_login_timeout(self, timeout_seconds: int) -> None:
+        timeout_minutes = timeout_seconds // 60
+        message = f"等待云游戏登录超时（{timeout_minutes} 分钟），停止运行"
+        self.log_error(message)
+        self.stop_game()
+        raise CloudGameLoginTimeoutError(message)
+
+    def _check_login_timeout(self, deadline: float, timeout_seconds: int) -> None:
+        if time.monotonic() >= deadline:
+            self._abort_login_timeout(timeout_seconds)
 
     def _click_enter_game(self, timeout=5) -> None:
         """
@@ -979,10 +1113,13 @@ class CloudGameController(GameControllerBase):
         except Exception as e:
             self.log_warning(f"解析二维码内容失败: {e}")
 
-    def _wait_scan_success_with_refresh(self, qr_filename: str) -> None:
+    def _wait_scan_success_with_refresh(self, qr_filename: str, login_deadline: float = None, timeout_seconds: int = None) -> None:
         import os
         check_interval = 2
         while True:
+            if login_deadline is not None and timeout_seconds is not None:
+                self._check_login_timeout(login_deadline, timeout_seconds)
+
             # 成功
             if self.driver.find_elements(By.XPATH, "//*[contains(text(), '扫码成功')]"):
                 try:
@@ -1025,7 +1162,7 @@ class CloudGameController(GameControllerBase):
 
             time.sleep(check_interval)
 
-    def _run_qr_login_flow(self) -> None:
+    def _run_qr_login_flow(self, login_deadline: float = None, timeout_seconds: int = None) -> None:
         self.log_info("正在切换到二维码登录...")
 
         # 每次进入二维码登录流程时重置通知限流状态
@@ -1047,7 +1184,7 @@ class CloudGameController(GameControllerBase):
             self._decode_qr_from_element(qr_img, qr_filename)
             self.log_info("=" * 60)
             self.log_info("等待扫码（二维码过期将自动刷新）...")
-            self._wait_scan_success_with_refresh(qr_filename)
+            self._wait_scan_success_with_refresh(qr_filename, login_deadline, timeout_seconds)
         except TimeoutException:
             self.log_warning("等待二维码加载超时")
         except Exception as e:
@@ -1086,6 +1223,8 @@ class CloudGameController(GameControllerBase):
         try:
             # 检测登录状态
             while not self._check_login():
+                login_timeout_seconds = self._get_login_timeout_seconds()
+                login_deadline = time.monotonic() + login_timeout_seconds
                 self.log_info("未登录")
 
                 # 如果是 headless 且配置了自动重启，则以非 headless 模式重启启动让用户登录
@@ -1095,12 +1234,15 @@ class CloudGameController(GameControllerBase):
 
                 # 如果是 headless 且配置了不重启，则尝试二维码登录
                 if self.cfg.browser_headless_enable and (not self.cfg.browser_headless_restart_on_not_logged_in):
-                    self._run_qr_login_flow()
+                    self._run_qr_login_flow(login_deadline, login_timeout_seconds)
 
-                self.log_info("请在浏览器中完成登录操作")
+                self.log_info(f"请在浏览器中完成登录操作，超时时间：{login_timeout_seconds // 60} 分钟")
 
                 # 循环检测用户是否登录
-                while not self._check_login():
+                while True:
+                    self._check_login_timeout(login_deadline, login_timeout_seconds)
+                    if self._check_login():
+                        break
                     time.sleep(2)
 
                 self.log_info("检测到登录成功")
@@ -1146,13 +1288,15 @@ class CloudGameController(GameControllerBase):
                 self._confirm_viewport_resolution()  # 将浏览器内部分辨率设置为 1920x1080
                 self.log_info("进入云游戏成功")
                 return True
+        except CloudGameLoginTimeoutError:
+            raise
         except Exception as e:
             self.try_dump_page()
             self.log_error(f"进入云游戏失败: {e}")
             return False
 
         if remaining == 0:
-            raise Exception("云游戏剩余时长为 0，停止运行")
+            raise RuntimeError("云游戏剩余时长为 0，停止运行")
         return False
 
     def _take_video_screenshot(self, crop=(0, 0, 1, 1)) -> tuple[bytes, tuple[int, int]] | None:
@@ -1506,7 +1650,54 @@ class CloudGameController(GameControllerBase):
         """, text)
 
     def change_auto_battle(self, status: bool) -> None:
-        """从 local storage 中读取并修改 auto battle"""
+        """
+        从 local storage 中读取并修改 auto battle
+
+        云·星穹铁道 兼容模式技术分析：
+        - 配置存储位置: localStorage, 键名: clgm_web_app_settings_hkrpg_cn
+        - 配置字段: compatibleModeSwitch (boolean)
+        - 核心作用: 强制使用 H264 编码，禁用 HEVC/H265
+
+        视频编码模式对比：
+        | 模式           | enableHevc | enableWrappedHevc | compatibleMode | 渲染元素   |
+        |---------------|------------|-------------------|----------------|-----------|
+        | DefaultH264   | ❌         | ❌                 | ❌              | <video>   |
+        | ForceH264     | ❌         | ❌                 | ✅              | <video>   |
+        | WrappedH265   | ❌         | ✅                 | ❌              | <canvas>  |
+        | NativeH265    | ✅         | ❌                 | ❌              | <video>   |
+
+        编码选择优先级:
+        1. compatibleModeSwitch=true → ForceH264 (强制H264)
+        2. hevcCodecSwitch=true → NativeH265 (浏览器原生HEVC解码)
+        3. wrappedHevcSwitch=true → WrappedH265 (自定义HEVC Pipeline, 需要 hasHevcHardwareDecoder + hasInsertableStreams)
+        4. 默认 → DefaultH264
+
+        NativeH265 vs WrappedH265 区别:
+        - NativeH265: 浏览器原生 HEVC 解码，性能好但兼容性差 (Safari/部分Edge/Chrome支持)
+        - WrappedH265: 通过修改 SDP packetization mode 将 H264 RTP 包装为 HEVC 格式，使用自定义 Pipeline 解码，兼容性更好
+
+        硬件解码与编码方式关系:
+        - H264 (Default/Force): 不强制依赖硬件解码，软件解码也能工作 (但性能较差)
+        - H265/HEVC (Native/Wrapped): 必须有硬件解码支持，否则会失败并触发回落
+        - 硬件检测: hasHevcHardwareDecoder (HEVC硬件解码器) + hasInsertableStreams (Insertable Streams API)
+        - WrappedH265 支持条件: isWrappedHevcPipelineSupported = hasHevcHardwareDecoder && hasInsertableStreams
+
+        Docker/无GPU环境编码情况:
+        - 通常没有 GPU 直通，hasHevcHardwareDecoder = false
+        - WrappedH265 和 NativeH265 都不可用
+        - 只能使用 H264 (DefaultH264 或 ForceH264)
+        - 例外: forceSupportH265 配置可强制启用 H265 (预览模式/测试用)
+        - hevcCodecSwitch 默认值来自服务器 compatConfig.enableHevc 配置
+
+        H264 Profile 区别:
+        - 兼容模式 (ForceH264): 只用 Baseline profile (最广泛兼容，性能最低)
+        - 非兼容模式 (DefaultH264): 可用 High/Main/Baseline profile (性能更好)
+
+        HEVC 失败回落流程:
+        - 触发条件: RtcSDKHEVCDecodingFailureDetected (-1036), RtcSDKOnPlayTimeout (-1037), RtcSDKWrappedHEVCPipelineFailed (-1038)
+        - 如果已开启兼容模式: 直接重连
+        - 如果未开启兼容模式: 弹窗提示用户选择 (退出游戏 / 开启兼容模式 / 下载客户端)
+        """
         ls = json.loads(self.driver.execute_script("return JSON.stringify(localStorage)"))
         cloud = json.loads(ls.get("cg_hkrpg_cn_cloudData", "{}"))
         cloud.setdefault("value", {})
@@ -1530,6 +1721,12 @@ class CloudGameController(GameControllerBase):
         save["IntDicts"] = int_dicts
         cloud["value"]["RPGCloudSave"] = json.dumps(save)
         ls["cg_hkrpg_cn_cloudData"] = json.dumps(cloud)
+
+        # # 开启兼容模式
+        # app_settings = json.loads(ls.get("clgm_web_app_settings_hkrpg_cn", "{}"))
+        # app_settings["compatibleModeSwitch"] = True
+        # ls["clgm_web_app_settings_hkrpg_cn"] = json.dumps(app_settings)
+        # self.log_debug("设置兼容模式为开启")
 
         for k, v in ls.items():
             self.driver.execute_script(f"localStorage.setItem('{k}', arguments[0]);", v)

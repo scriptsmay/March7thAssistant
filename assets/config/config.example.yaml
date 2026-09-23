@@ -9,6 +9,12 @@ log_level: INFO # 日志等级，可选值：INFO, DEBUG。INFO 仅记录重要�
 log_retention_days: 30 # 日志保留天数，超过此天数的日志文件将被自动删除。
 log_overlay_enable: true # 是否在游戏界面上显示实时日志浮窗（仅 Windows）。
 
+# 自动对话设置
+autoplot_skip_enable: true # 是否自动跳过对话（当出现跳过按钮时自动点击）。
+autoplot_click_enable: true # 是否自动选择对话选项。
+autoplot_battle_detect_enable: true # 是否自动战斗检测（检测到未自动战斗时按 V 开启）。
+autoplot_phone_detect_enable: true # 是否自动处理手机短信页面。
+
 # 调试模式
 debug_mode_enable: false # 是否启用调试模式。开启后会在屏幕对应位置实时绘制检测范围框（透明悬浮窗），用于调试自动化识别。仅 Windows 生效。
 
@@ -54,6 +60,7 @@ cloud_game_enable: False # 是否启动云游戏
 cloud_game_fullscreen_enable: True # 云崩铁是否全屏运行
 cloud_game_use_paid_time: False # 是否使用付费时长
 cloud_game_max_queue_time: 60 # 最大排队等待时间（分钟）
+cloud_game_login_timeout: 20 # 等待登录的超时时间（分钟），超时后终止运行
 # cloud_game_video_quality: '0' # 云崩铁画质 '0'(超高清)，'1'（高清）, '2'（标清）, '3'（低清）
 # cloud_game_smooth_first_enable: False # 是否流畅优先
 # cloud_game_status_bar_enable: False # 是否显示网速
@@ -82,6 +89,7 @@ browser_mirror_urls:
 # 体力计划列表，每项包含副本类型、副本名称和剩余次数，例如：[["拟造花萼（金）", "回忆之蕾", 10], ["侵蚀隧洞", "睿治之径", 5]]
 power_enable: true # 是否启用清体力总开关。false 时完整运行和“日常”中的历战余响与清体力都会跳过，但单独执行“清体力”任务不受影响。
 power_plan: []
+power_plan_keep: false # 是否在执行后保留整份体力计划。true 保留，false 按剩余次数更新并删除已完成计划。
 instance_type: 拟造花萼（金） # 设置副本类型，可选值：拟造花萼（金）、拟造花萼（赤）、凝滞虚影、侵蚀隧洞、饰品提取。
 calyx_golden_preference: Jarilo-VI # 设置拟造花萼（金）偏好地区，可选值："雅利洛-VI"（Jarilo-VI）、仙舟「罗浮」（XianzhouLuofu）、匹诺康尼（Penacony）。
 instance_names:
@@ -385,6 +393,8 @@ hotkey_auto_battle: v # 设置自动战斗的按键。
 
 # 图形界面快捷键设置
 hotkey_stop_task: f10 # 设置停止任务的全局快捷键（支持后台）。
+hotkey_toggle_autoplot: f9 # 设置切换自动对话的全局快捷键（支持后台）。
+hotkey_toggle_autoplot_enable: false # 是否启用自动对话全局快捷键。启用后可通过快捷键快速切换自动对话的开/关状态。
 
 # 定时运行设置
 # 说明：
@@ -546,6 +556,7 @@ notify_smtp_port: "" # SMTP 服务器端口，默认为 465。
 notify_smtp_ssl: true # 是否使用 SSL 连接 SMTP 服务器。默认为 True，可设置为 False 关闭。
 notify_smtp_starttls: false # 是否使用 SSL 连接 SMTP 服务器。默认为 False，可设置为 True 关闭。
 notify_smtp_ssl_unverified: false # 是否使用不经验证的 SSL 连接。默认为 False，可设置为 True 关闭。除非您使用自签名邮箱,否则不推荐启用。
+notify_smtp_plain_text: false # 是否以纯文本格式发送邮件。默认为 False（发送 HTML 格式）。true 开启后将以纯文本发送，适用于 Outlook 等将 HTML 邮件作为附件处理的邮箱。
 
 # OneBot 通知配置（QQ 机器人）
 # 已测试 NapCatQQ(https://github.com/NapNeko/NapCatQQ) 和 OpenShamrock(https://github.com/whitechi73/OpenShamrock) 可用

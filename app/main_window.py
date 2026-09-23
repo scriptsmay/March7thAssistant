@@ -81,10 +81,11 @@ class ClickableLabel(QLabel):
 
 
 class MainWindow(MSFluentWindow):
-    def __init__(self, task=None, exit_on_complete=False):
+    def __init__(self, task=None, exit_on_complete=False, start_minimized_to_tray=False):
         super().__init__()
         self.startup_task = task  # 保存启动时要执行的任务
         self.exit_on_complete = exit_on_complete  # 任务完成后是否退出
+        self.start_minimized_to_tray = start_minimized_to_tray
         self.detected_update_version = None
         self.updateVersionBadge = None
         qconfig.themeChanged.connect(self._on_theme_changed)
@@ -94,6 +95,9 @@ class MainWindow(MSFluentWindow):
         self.initInterface()
         self.initNavigation()
         self.initSystemTray()
+
+        if self.start_minimized_to_tray:
+            self.hide()
 
         # 初始化配置文件监视器
         self.config_watcher = ConfigWatcher(os.path.abspath(cfg.config_path), self)
@@ -257,6 +261,8 @@ class MainWindow(MSFluentWindow):
         signalBus.uiLanguageChanged.connect(self._on_ui_language_changed)
         # 连接任务完成信号
         self.logInterface.taskFinished.connect(self._onTaskFinished)
+        # 连接自动对话切换信号
+        self.logInterface.autoplotToggleRequested.connect(self._onAutoplotToggleRequested)
 
     def initNavigation(self):
         self.addSubInterface(self.homeInterface, FIF.HOME, tr('主页'))
@@ -430,6 +436,13 @@ class MainWindow(MSFluentWindow):
         """处理热键配置改变信号"""
         if hasattr(self, 'logInterface'):
             self.logInterface.updateHotkey()
+        if hasattr(self, 'toolsInterface'):
+            self.toolsInterface.automaticPlotCard.updateHotkeyHint()
+
+    def _onAutoplotToggleRequested(self):
+        """处理自动对话切换请求（全局热键触发）"""
+        if hasattr(self, 'toolsInterface'):
+            self.toolsInterface.toggleAutoPlot()
 
     def _on_ui_language_changed(self, lang_code: str):
         """热重载 UI 语言，无需重启。
@@ -813,6 +826,19 @@ class MainWindow(MSFluentWindow):
         if start_game_button:
             start_game_button.setEnabled(False)
         game = get_game_controller()
+        if game.is_game_running():
+            InfoBar.warning(
+                title=tr('游戏已在运行'),
+                content=tr('无需重复启动游戏'),
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self
+            )
+            if start_game_button:
+                start_game_button.setEnabled(True)
+            return
         if cfg.cloud_game_enable and cfg.browser_type == "integrated" and not game.is_integrated_browser_downloaded():
             InfoBar.warning(
                 title=tr('正在下载内置浏览器(ง •̀_•́)ง'),

@@ -52,6 +52,7 @@ from module.workflow import (
     can_change_to_screen_from_main,
     duplicate_workflow_name,
     export_workflow_to_zip,
+    format_point_expression,
     get_asset_directory,
     get_current_workflow_name,
     get_switchable_screen_name,
@@ -61,6 +62,7 @@ from module.workflow import (
     is_workflow_read_only,
     load_workflows,
     normalize_step,
+    parse_point_expression,
     save_workflows,
     set_current_workflow_name,
     summarize_step,
@@ -147,6 +149,7 @@ class StepEditDialog(QDialog):
         "click_image",
         "click_text",
         "click_crop",
+        "drag_mouse",
         "find_image",
         "find_text",
         "play_audio",
@@ -176,6 +179,8 @@ class StepEditDialog(QDialog):
         self.setWindowTitle(tr("编辑步骤"))
         self.resize(640, 420)
         self.setMinimumWidth(560)
+
+        StyleSheet.WORKFLOW_INTERFACE.apply(self)
 
         self.original_step = normalize_step(step or {"type": "click_text"})
         self.workflow = workflow
@@ -246,6 +251,14 @@ class StepEditDialog(QDialog):
         self.pressDurationSpin.setRange(0.0, 60.0)
         self.pressDurationSpin.setDecimals(2)
         self.pressDurationSpin.setSingleStep(0.1)
+        self.startPointEdit = LineEdit(self)
+        self.startPointEdit.setPlaceholderText(tr("例如 100 / 1920, 540 / 1080"))
+        self.endPointEdit = LineEdit(self)
+        self.endPointEdit.setPlaceholderText(tr("例如 900 / 1920, 540 / 1080"))
+        self.dragDurationSpin = DoubleSpinBox(self)
+        self.dragDurationSpin.setRange(0.0, 60.0)
+        self.dragDurationSpin.setDecimals(2)
+        self.dragDurationSpin.setSingleStep(0.1)
 
         self._add_row(tr("步骤类型"), self.typeCombo, key="type")
         self._add_row(tr("条件类型"), self.conditionTypeCombo, key="condition")
@@ -266,6 +279,9 @@ class StepEditDialog(QDialog):
         self._add_row(tr("按键动作"), self.keyActionCombo, key="key_action")
         self._add_row(tr("点击动作"), self.clickActionCombo, key="click_action")
         self._add_row(tr("按下时长"), self.pressDurationSpin, key="press_duration")
+        self._add_row(tr("滑动起点"), self.startPointEdit, key="start")
+        self._add_row(tr("滑动终点"), self.endPointEdit, key="end")
+        self._add_row(tr("滑动时长"), self.dragDurationSpin, key="drag_duration")
         self.formLayout.addStretch(1)
 
         button_layout = QHBoxLayout()
@@ -337,6 +353,9 @@ class StepEditDialog(QDialog):
         self.clickActionCombo.setCurrentIndex(click_action_map.get(click_action, 0))
 
         self.pressDurationSpin.setValue(self.original_step.get("press_duration", 0.1))
+        self.startPointEdit.setText(format_point_expression(self.original_step.get("start", "")))
+        self.endPointEdit.setText(format_point_expression(self.original_step.get("end", "")))
+        self.dragDurationSpin.setValue(self.original_step.get("drag_duration", 0.5))
 
     def _current_step_type(self) -> str:
         return self.STEP_TYPES[self.typeCombo.currentIndex()]
@@ -356,6 +375,8 @@ class StepEditDialog(QDialog):
             visible_rows.update({"text", "include", "crop", "retries", "click_action", "press_duration"})
         elif step_type == "click_crop":
             visible_rows.update({"crop", "click_action", "press_duration"})
+        elif step_type == "drag_mouse":
+            visible_rows.update({"start", "end", "drag_duration"})
         elif step_type == "find_image":
             visible_rows.update({"template", "threshold", "crop", "retries"})
         elif step_type == "find_text":
@@ -437,6 +458,17 @@ class StepEditDialog(QDialog):
         if step_type == "click_crop" and not self.cropEdit.text().strip():
             return False, tr("点击坐标需要填写检测区域")
 
+        if step_type == "drag_mouse":
+            if not self.startPointEdit.text().strip() or not self.endPointEdit.text().strip():
+                return False, tr("滑动鼠标需要填写起点和终点")
+            try:
+                start = parse_point_expression(self.startPointEdit.text())
+                end = parse_point_expression(self.endPointEdit.text())
+                if any(not 0.0 <= value <= 1.0 for value in (*start, *end)):
+                    return False, tr("滑动鼠标坐标必须在 0 到 1 之间")
+            except (TypeError, ValueError) as exc:
+                return False, str(exc)
+
         if step_type == "play_audio" and not self.audioPathEdit.text().strip():
             return False, tr("请输入音频文件路径")
 
@@ -507,6 +539,9 @@ class StepEditDialog(QDialog):
             "key_action": key_action,
             "click_action": click_action,
             "press_duration": self.pressDurationSpin.value(),
+            "start": self.startPointEdit.text().strip(),
+            "end": self.endPointEdit.text().strip(),
+            "drag_duration": self.dragDurationSpin.value(),
             "children": copy.deepcopy(self.original_step.get("children", [])) if step_type in self.CONTROL_STEP_TYPES else [],
         }
         return normalize_step(step)
@@ -572,14 +607,11 @@ class WorkflowInterface(ScrollArea):
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
         self.runButton = PrimaryPushButton(FIF.PLAY, tr("运行流程"), self.summaryCard)
-        self.stopButton = PushButton(FIF.CLOSE, tr("停止流程"), self.summaryCard)
-        self.stopButton.setEnabled(True)
         self.captureTemplateButton = PushButton(FIF.CAMERA, tr("采集图像模板"), self.summaryCard)
         self.openTemplateDirButton = PushButton(FIF.FOLDER, tr("打开模板目录"), self.summaryCard)
         self.importWorkflowButton = PushButton(FIF.DOWNLOAD, tr("导入流程"), self.summaryCard)
         self.exportWorkflowButton = PushButton(FIF.SAVE_AS, tr("导出流程"), self.summaryCard)
         action_row.addWidget(self.runButton)
-        action_row.addWidget(self.stopButton)
         action_row.addStretch(1)
         action_row.addWidget(self.captureTemplateButton)
         action_row.addWidget(self.openTemplateDirButton)
@@ -656,7 +688,6 @@ class WorkflowInterface(ScrollArea):
         self.importWorkflowButton.clicked.connect(self._import_workflow)
         self.exportWorkflowButton.clicked.connect(self._export_workflow)
         self.runButton.clicked.connect(self._run_current_workflow)
-        self.stopButton.clicked.connect(self._stop_current_workflow)
         self.captureTemplateButton.clicked.connect(lambda: self._start_capture("template"))
         self.openTemplateDirButton.clicked.connect(lambda: self._open_directory(get_asset_directory("template", self._current_workflow())))
         self.addStepButton.clicked.connect(self._add_step)
@@ -1239,11 +1270,6 @@ class WorkflowInterface(ScrollArea):
         if selected_path is None:
             return
         self._start_workflow_execution(selected_path)
-
-    def _stop_current_workflow(self):
-        log_interface = self._get_log_interface()
-        if log_interface is not None:
-            log_interface.stopTask()
 
     def _start_capture(self, kind: str):
         if self._current_workflow_is_read_only():

@@ -266,6 +266,8 @@ class LogInterface(ScrollArea):
     taskFinished = Signal(int)  # exit_code
     # 信号：请求停止任务（用于从全局热键线程安全调用）
     stopTaskRequested = Signal()
+    # 信号：请求切换自动对话状态（用于从全局热键线程安全调用）
+    autoplotToggleRequested = Signal()
     # 线程安全的日志信号（用于从后台线程发送日志）
     logMessage = Signal(str)
 
@@ -290,6 +292,13 @@ class LogInterface(ScrollArea):
         self._parsed_hotkey_groups = []
         self._hotkey_trigger_key = None
         self._last_hotkey_trigger_ts = 0.0
+        # 自动对话热键状态
+        self._autoplot_hotkey_registered = False
+        self._autoplot_current_hotkey = None
+        self._autoplot_hotkey_handler = None
+        self._autoplot_parsed_hotkey_groups = []
+        self._autoplot_hotkey_trigger_key = None
+        self._autoplot_last_hotkey_trigger_ts = 0.0
         # 当前运行的定时任务元数据（如果是由定时触发），在进程结束时用于发送通知与执行后续操作
         self._pending_task_meta = None
         # 当前链式定时任务中排队等待执行的后续任务
@@ -457,6 +466,7 @@ class LogInterface(ScrollArea):
     def __initShortcut(self):
         """初始化快捷键（全局热键，支持后台）"""
         self._registerGlobalHotkey()
+        self._registerAutoplotHotkey()
 
     def _initOverlayMonitor(self):
         if sys.platform != 'win32':
@@ -679,6 +689,7 @@ class LogInterface(ScrollArea):
     def updateHotkey(self):
         """更新热键（当配置改变时调用）"""
         self._registerGlobalHotkey()
+        self._registerAutoplotHotkey()
         if sys.platform == 'win32':
             # 更新按钮文本
             hotkey = cfg.get_value("hotkey_stop_task", "f10").upper()
@@ -691,6 +702,75 @@ class LogInterface(ScrollArea):
                 pass
         else:
             self.stopButton.setText(self.tr('停止任务'))
+
+    def _registerAutoplotHotkey(self):
+        """注册自动对话全局热键"""
+        if sys.platform == 'win32':
+            self._unregisterAutoplotHotkey()
+
+            if not cfg.get_value("hotkey_toggle_autoplot_enable", False):
+                return
+
+            try:
+                hotkey = cfg.get_value("hotkey_toggle_autoplot", "f9")
+                parsed_groups, trigger_key = self._parseHotkeyForHook(hotkey)
+                if not parsed_groups or not trigger_key:
+                    raise ValueError(f"无法解析热键: {hotkey}")
+
+                self._autoplot_parsed_hotkey_groups = parsed_groups
+                self._autoplot_hotkey_trigger_key = trigger_key
+                self._autoplot_hotkey_handler = keyboard.on_press_key(trigger_key, self._onAutoplotHotkeyEvent, suppress=False)
+                self._autoplot_hotkey_registered = True
+                self._autoplot_current_hotkey = hotkey
+            except Exception as e:
+                print(f"注册自动对话全局热键失败: {e}")
+                self._autoplot_hotkey_registered = False
+                self._autoplot_hotkey_handler = None
+                self._autoplot_parsed_hotkey_groups = []
+                self._autoplot_hotkey_trigger_key = None
+
+    def _unregisterAutoplotHotkey(self):
+        """取消注册自动对话全局热键"""
+        if sys.platform == 'win32':
+            if self._autoplot_hotkey_registered and self._autoplot_hotkey_handler is not None:
+                try:
+                    keyboard.unhook(self._autoplot_hotkey_handler)
+                except Exception as e:
+                    print(f"取消注册自动对话全局热键失败: {e}")
+                self._autoplot_hotkey_registered = False
+                self._autoplot_current_hotkey = None
+                self._autoplot_hotkey_handler = None
+                self._autoplot_parsed_hotkey_groups = []
+                self._autoplot_hotkey_trigger_key = None
+
+    def _onAutoplotHotkeyEvent(self, _event):
+        """自动对话热键事件回调"""
+        try:
+            if not self._autoplot_parsed_hotkey_groups:
+                return
+
+            now = time.monotonic()
+            if now - self._autoplot_last_hotkey_trigger_ts < 0.12:
+                return
+
+            for group in self._autoplot_parsed_hotkey_groups:
+                if self._isGroupPressed(group):
+                    self._autoplot_last_hotkey_trigger_ts = now
+                    self._onAutoplotHotkeyPressed()
+                    return
+        except Exception:
+            self._onAutoplotHotkeyPressed()
+
+    @Slot()
+    def _emitAutoplotToggleRequestedMainThread(self):
+        self.autoplotToggleRequested.emit()
+
+    def _onAutoplotHotkeyPressed(self):
+        """自动对话全局热键被按下"""
+        try:
+            QMetaObject.invokeMethod(self, "_emitAutoplotToggleRequestedMainThread", Qt.ConnectionType.QueuedConnection)
+        except Exception:
+            self.autoplotToggleRequested.emit()
 
     def _getScheduledTaskTriggerMode(self, task) -> str:
         mode = str((task or {}).get('trigger_mode', 'time')).strip().lower()
@@ -990,6 +1070,14 @@ class LogInterface(ScrollArea):
                 self._active_task_chain = []
             program = str(task.get('program', '')).strip()
             args = str(task.get('args', '') or '')
+            if program.lower() == 'workflow':
+                workflow_name = str(task.get('workflow_name') or args).strip()
+                if getattr(sys, 'frozen', False):
+                    program = os.path.abspath('./March7th Assistant.exe')
+                    args = shlex.join(['--workflow-name', workflow_name])
+                else:
+                    program = sys.executable
+                    args = shlex.join([os.path.abspath('main.py'), '--workflow-name', workflow_name])
             timeout = int(task.get('timeout', 0) or 0)
             if program.lower() == 'self':
                 self._startTask(args, timeout)
@@ -1602,7 +1690,7 @@ class LogInterface(ScrollArea):
             self._user_initiated_stop = False
         except Exception:
             user_stop = False
-        if exit_status == QProcess.NormalExit:
+        if exit_status == QProcess.NormalExit and exit_code == 0:
             self.appendLog(f"任务完成，退出码: {exit_code}\n")
         else:
             if user_stop:
@@ -1691,9 +1779,15 @@ class LogInterface(ScrollArea):
                             # 用户停止不视为异常；否则根据退出状态与异常标记判定
                             abnormal = False
                             try:
-                                abnormal = (not user_stop) and (getattr(self, '_stopped_abnormally', False) or exit_status != QProcess.NormalExit)
+                                abnormal = (not user_stop) and (
+                                    getattr(self, '_stopped_abnormally', False)
+                                    or exit_status != QProcess.NormalExit
+                                    or exit_code != 0
+                                )
                             except Exception:
-                                abnormal = (not user_stop) and (exit_status != QProcess.NormalExit)
+                                abnormal = (not user_stop) and (
+                                    exit_status != QProcess.NormalExit or exit_code != 0
+                                )
                             note = (f"定时任务异常结束: {pm.get('name', '')}" if abnormal else f"定时任务完成: {pm.get('name', '')}")
 
                             def _send_notify(n):
@@ -1972,6 +2066,7 @@ class LogInterface(ScrollArea):
     def cleanup(self):
         """清理资源（在应用退出时调用）"""
         self._unregisterGlobalHotkey()
+        self._unregisterAutoplotHotkey()
         self._external_task_active = False
         self._external_task_name = None
         self._external_task_stop_callback = None

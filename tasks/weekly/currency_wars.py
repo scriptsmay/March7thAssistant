@@ -232,9 +232,10 @@ class CurrencyWars:
                     return target
         return None
 
-    def start(self):
+    def start(self) -> bool:
         log.hr('准备货币战争', '0')
-        if self.run():
+        success = self.run()
+        if success:
             Base.send_notification_with_screenshot("货币战争已完成", NotificationLevel.ALL, self.screenshot)
             self.screenshot = None
         else:
@@ -246,6 +247,7 @@ class CurrencyWars:
         if has_reward and cfg.currencywars_bonus_enable:
             self.process_ornament()
         log.hr("完成", 2)
+        return success
 
     def check_currency_wars_score(self) -> bool:
         """
@@ -389,12 +391,34 @@ class CurrencyWars:
             log.error("选择关卡失败，结束任务")
             return False
 
-        if not auto.click_element('开始对局', 'text', None, 10):
-            log.error("未找到开始对局按钮，结束任务")
-            return False
+        if not self.wait_for_war_start():
+            # 启动状态不明确时停止外层循环，避免继续领奖或反复创建对局。
+            raise RuntimeError("货币战争启动失败：未确认进入对局")
 
         log.info("开始对局")
         return True
+
+    def wait_for_war_start(self) -> bool:
+        """有限重试开始按钮，并确认进入开局界面后才交给任务主循环。"""
+        attempts = 0
+        last_click = -3
+        for poll in range(30):
+            # 每轮重新识别位置，加载中或 OCR 暂时漏检时不复用旧坐标。
+            pos = auto.find_element('开始对局', 'text')
+            if pos:
+                if attempts < 3 and poll - last_click >= 3:
+                    attempts += 1
+                    last_click = poll
+                    log.info(f"尝试开始对局（{attempts}/3）")
+                    auto.click_element_with_pos(pos)
+            elif auto.find_element(('下一步', '投资环境', '请选择投资策略', '遭遇节点'), 'text') or auto.find_element(
+                "./assets/images/screen/currency_wars/exit.png", "image", 0.9,
+                crop=(3.0 / 1920, 37.0 / 1080, 104.0 / 1920, 57.0 / 1080)
+            ):
+                return True
+            time.sleep(2)
+        log.error("等待货币战争开局超时，未确认进入对局")
+        return False
 
     def choose_level(self, level: int) -> bool:
         """
@@ -417,7 +441,7 @@ class CurrencyWars:
         else:
             # pos = auto.find_element("./assets/images/screen/currency_wars/level_down.png", "image", 100000)
             pos = auto.find_element((936 / 1920, 830 / 1080, 45 / 1920, 31 / 1080), "crop")
-            for _ in range(40):
+            for _ in range(100):
                 if auto.find_element(f"./assets/images/screen/currency_wars/level_1.png", "image", 0.95, crop=(440.0 / 1920, 892.0 / 1080, 385.0 / 1920, 137.0 / 1080)):
                     log.info(f"已选择敌人难度为1的关卡")
                     return True
@@ -1823,7 +1847,20 @@ class CurrencyWars:
         self._log_character_status()
 
         # 特殊会弹窗角色
-        star_characters = {"星期日", "花火", "大丽花", "知更鸟", "黑天鹅", "银狼LV.999"}
+        # 盛会之星角色
+        star_characters = {"加拉赫", "大丽花", "花火", "星期日", "知更鸟", "黑天鹅"}
+        # 命运卜者角色
+        star_characters.add("黑天鹅")
+        # 我来当策划角色
+        star_characters.add("银狼LV.999")
+        # 祈愿试炼角色
+        star_characters.update({"远坂凛", "吉尔伽美什", "Saber", "Archer"})
+        # 选择伙伴角色
+        star_characters.update({"姬子·启行", "丹恒·饮月", "星期日", "瓦尔特", "姬子", "三月七"})
+        remembrance_trailblazer_name = self.get_remembrance_trailblazer_name()
+        if remembrance_trailblazer_name:
+            star_characters.add(remembrance_trailblazer_name)
+
         if list2[i2].name in star_characters or list1[i1].name in star_characters:
             time.sleep(4)  # 等待选择框出现
         self.check_festival_star_popup()
@@ -1833,42 +1870,60 @@ class CurrencyWars:
         """
         检查是否弹出盛会之星或命运卜者等内容的选择框
         """
-        result = auto.get_single_line_text(crop=(936.0 / 1920, 52.0 / 1080, 219.0 / 1920, 53.0 / 1080))
-        if result:
-            if "盛会之星" in result:
-                log.info("检测到盛会之星")
-                char_crop = (816.0 / 1920, 165.0 / 1080, 222.0 / 1920, 202.0 / 1080)
-                auto.click_element(char_crop, "crop")
-                time.sleep(0.5)
-                auto.click_element("确认选择", "text", crop=(1428.0 / 1920, 539.0 / 1080, 124.0 / 1920, 46.0 / 1080))
-                time.sleep(0.5)
-            elif "命运卜者" in result:
-                log.info("检测到命运卜者")
-                char_crop = (850.0 / 1920, 167.0 / 1080, 395.0 / 1920, 249.0 / 1080)
-                auto.click_element(char_crop, "crop")
-                time.sleep(0.5)
-                char_crop_pos = [
-                    (800.0 / 1920, 372.0 / 1080, 25.0 / 1920, 36.0 / 1080),
-                    (1208.0 / 1920, 371.0 / 1080, 25.0 / 1920, 36.0 / 1080),
-                    (1617.0 / 1920, 373.0 / 1080, 24.0 / 1920, 35.0 / 1080)
-                ]
-                for pos in char_crop_pos:
-                    result = auto.get_single_line_text(crop=pos)
-                    if result:
-                        # 优先选择0费
-                        if result.isdigit() and int(result) == 0:
-                            auto.click_element(pos, "crop")
-                            time.sleep(0.5)
-                            break
-                auto.click_element("确认选择", "text", crop=(1329.0 / 1920, 572.0 / 1080, 332.0 / 1920, 55.0 / 1080))
-                time.sleep(0.5)
-            elif "我来当策划" in result:
-                log.info("检测到我来当策划")
-                choose_crop = (564 / 1920, 191 / 1080, 449 / 1920, 225 / 1080)
-                auto.click_element(choose_crop, "crop")
-                time.sleep(0.5)
-                auto.click_element("确认选择", "text", crop=(1424 / 1920, 573 / 1080, 134 / 1920, 51 / 1080))
-                time.sleep(0.5)
+        for _ in range(5):
+            result = auto.get_single_line_text(crop=(936.0 / 1920, 52.0 / 1080, 219.0 / 1920, 53.0 / 1080))
+            if result:
+                if "盛会之星" in result:
+                    log.info("检测到盛会之星")
+                    char_crop = (816.0 / 1920, 165.0 / 1080, 222.0 / 1920, 202.0 / 1080)
+                    auto.click_element(char_crop, "crop")
+                    time.sleep(0.5)
+                    auto.click_element("确认选择", "text", crop=(1428.0 / 1920, 539.0 / 1080, 124.0 / 1920, 46.0 / 1080))
+                elif "命运卜者" in result:
+                    log.info("检测到命运卜者")
+                    char_crop = (850.0 / 1920, 167.0 / 1080, 395.0 / 1920, 249.0 / 1080)
+                    auto.click_element(char_crop, "crop")
+                    time.sleep(0.5)
+                    char_crop_pos = [
+                        (800.0 / 1920, 372.0 / 1080, 25.0 / 1920, 36.0 / 1080),
+                        (1208.0 / 1920, 371.0 / 1080, 25.0 / 1920, 36.0 / 1080),
+                        (1617.0 / 1920, 373.0 / 1080, 24.0 / 1920, 35.0 / 1080)
+                    ]
+                    for pos in char_crop_pos:
+                        result = auto.get_single_line_text(crop=pos)
+                        if result:
+                            # 优先选择0费
+                            if result.isdigit() and int(result) == 0:
+                                auto.click_element(pos, "crop")
+                                time.sleep(0.5)
+                                break
+                    auto.click_element("确认选择", "text", crop=(1329.0 / 1920, 572.0 / 1080, 332.0 / 1920, 55.0 / 1080))
+                elif "我来当策划" in result:
+                    log.info("检测到我来当策划")
+                    choose_crop = (564 / 1920, 191 / 1080, 449 / 1920, 225 / 1080)
+                    auto.click_element(choose_crop, "crop")
+                    time.sleep(0.5)
+                    auto.click_element("确认选择", "text", crop=(1424 / 1920, 573 / 1080, 134 / 1920, 51 / 1080))
+                elif "祈愿试炼" in result:
+                    log.info("检测到祈愿试炼")
+                    choose1_crop = (458 / 1920, 179 / 1080, 448 / 1920, 339 / 1080)
+                    choose2_crop = (1189 / 1920, 187 / 1080, 441 / 1920, 332 / 1080)
+                    auto.click_element(choose1_crop, "crop")
+                    time.sleep(0.5)
+                    auto.click_element("确认选择", "text", crop=(1425 / 1920, 614 / 1080, 138 / 1920, 52 / 1080))
+                elif "选择伙伴" in result:
+                    log.info("检测到选择伙伴")
+                    choose1_crop = (936 / 1920, 165 / 1080, 222 / 1920, 265 / 1080)
+                    choose2_crop = (817 / 1920, 166 / 1080, 221 / 1920, 265 / 1080)
+                    auto.click_element(choose1_crop, "crop")
+                    time.sleep(0.5)
+                    auto.click_element(choose2_crop, "crop")
+                    time.sleep(0.5)
+                    auto.click_element("确认选择", "text", crop=(1423 / 1920, 572 / 1080, 135 / 1920, 50 / 1080))
+                time.sleep(2)
+                continue
+            else:
+                break
 
     def identify_current_stage(self):
         """
@@ -2837,26 +2892,27 @@ class CurrencyWars:
 
     def check_return_home(self) -> bool:
         """
-        检查并返回货币战争
+        检查并返回货币战争；已在首页时也应结束本局。
         """
-        if auto.click_element('返回货币战争', 'text', None, crop=(674.0 / 1920, 852.0 / 1080, 569.0 / 1920, 108.0 / 1080)):
+        if not screen.check_screen("currency_wars_homepage"):
+            # 结算布局可能变化，按完整按钮文字查找，不限定旧版按钮区域。
+            if not auto.click_element('返回货币战争', 'text', None):
+                return False
             log.info("检测到返回货币战争按钮，尝试点击")
             time.sleep(3)
             # 等待一段时间后再次检查按钮是否还在
-            pos = auto.find_element('返回货币战争', 'text', None, crop=(674.0 / 1920, 852.0 / 1080, 569.0 / 1920, 108.0 / 1080))
+            pos = auto.find_element('返回货币战争', 'text', None)
             if pos:
                 log.warning("返回货币战争按钮仍存在，尝试重新点击")
                 auto.click_element_with_pos(pos)
                 time.sleep(3)
-                # 再次检查按钮是否仍在
-                if auto.find_element('返回货币战争', 'text', None, crop=(674.0 / 1920, 852.0 / 1080, 569.0 / 1920, 108.0 / 1080)):
+                if auto.find_element('返回货币战争', 'text', None):
                     log.error("无法返回货币战争首页")
                     raise RuntimeError("无法返回货币战争首页")
-            if self.result is not None:
-                log.info(f"本次对局结果：{'胜利' if self.result else '失败'}")
-            else:
-                log.info("本次对局结果：未知")
             screen.wait_for_screen_change("currency_wars_homepage")
-            log.info("已返回货币战争首页")
-            return True
-        return False
+        if self.result is not None:
+            log.info(f"本次对局结果：{'胜利' if self.result else '失败'}")
+        else:
+            log.info("本次对局结果：未知")
+        log.info("已返回货币战争首页")
+        return True

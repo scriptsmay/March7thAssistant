@@ -5,7 +5,11 @@ os.chdir(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)else os
 
 import ctypes
 import argparse
+from utils.dpi import configure_dpi_awareness
 from utils.tasks import AVAILABLE_TASKS
+
+
+configure_dpi_awareness()
 
 
 def hide_console():
@@ -56,6 +60,11 @@ def parse_args():
         "-S", "--no-silent",
         action="store_true",
         help="不隐藏控制台窗口，显示命令行输出（仅 Windows）"
+    )
+    optional.add_argument(
+        "--start-minimized-to-tray",
+        action="store_true",
+        help="启动后最小化到托盘"
     )
 
     args = parser.parse_args()
@@ -206,10 +215,13 @@ if __name__ == "__main__":
     # 设置应用属性，必须在创建 QApplication 之前调用
     QApplication.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings)
 
-    # 避免用户环境中已有的 Qt 环境变量干扰打包后的 Qt 插件加载
+    # 避免用户环境变量干扰打包后的 Qt 和 OpenSSL 运行时
     if getattr(sys, 'frozen', False):
-        for _qt_key in ('QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QML2_IMPORT_PATH', 'QT_QPA_FONTDIR'):
-            os.environ.pop(_qt_key, None)
+        for _runtime_key in (
+            'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QML2_IMPORT_PATH', 'QT_QPA_FONTDIR',
+            'SSLKEYLOGFILE', 'OPENSSL_CONF',
+        ):
+            os.environ.pop(_runtime_key, None)
 
     app = QApplication(sys.argv)
 
@@ -265,7 +277,11 @@ if __name__ == "__main__":
 
     # 传递任务参数给主窗口
     from app.main_window import MainWindow
-    w = MainWindow(task=args.task, exit_on_complete=args.exit)
+    w = MainWindow(
+        task=args.task,
+        exit_on_complete=args.exit,
+        start_minimized_to_tray=args.start_minimized_to_tray,
+    )
 
     # 注册主窗口并处理启动期间收到的挂起消息
     _main_window = w

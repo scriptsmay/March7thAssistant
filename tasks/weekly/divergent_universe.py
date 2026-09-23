@@ -419,7 +419,7 @@ class DivergentUniverse:
                             else:
                                 if not auto.find_element("./assets/images/screen/divergent_universe/stage.png", "image", 0.9, crop=(33 / 1920, 52 / 1080, 68 / 1920, 60 / 1080)):
                                     log.error("多次尝试关闭冒险教学弹窗失败")
-                                    raise Exception("多次尝试关闭冒险教学弹窗失败")
+                                    raise RuntimeError("多次尝试关闭冒险教学弹窗失败")
                     self.process_leave()
 
             elif self.stage_finish:
@@ -886,10 +886,10 @@ class DivergentUniverse:
                 screen.change_to("divergent_mode_select")
                 if auto.click_element("继续进度", "text", crop=(39 / 1920, 215 / 1080, 748 / 1920, 597 / 1080)):
                     if not auto.find_element("./assets/images/screen/divergent_universe/stage.png", "image", 0.9, max_retries=120, crop=(33 / 1920, 52 / 1080, 68 / 1920, 60 / 1080)):
-                        raise Exception("重新进入关卡失败")
+                        raise RuntimeError("重新进入关卡失败")
                     return
                 else:
-                    raise Exception("未找到继续进度按钮")
+                    raise RuntimeError("未找到继续进度按钮")
         log.error("多次尝试重新进入关卡失败")
 
     def detect_random_door(self):
@@ -1041,7 +1041,7 @@ class DivergentUniverse:
         检查当前界面标题，并根据不同标题执行对应的处理函数
         """
         title_crop = (96 / 1920, 63 / 1080, 142 / 1920, 34 / 1080)
-        if auto.find_element(("欢愉假面", "选择方程", "选择祝福", "选择奇物", "丢弃奇物", "愿力满盈", "选择下一站", "事件", "选择站点卡", "存档管理", "混沌药箱"), 'text', crop=title_crop, include=True):
+        if auto.find_element(("欢愉假面", "选择方程", "选择祝福", "选择奇物", "丢弃奇物", "愿力满盈", "选择下一站", "事件", "选择站点卡", "存档管理", "混沌药箱", "人才管理阶段"), 'text', crop=title_crop, include=True):
             log.info(f"检测到 “{auto.matched_text}” 界面")
             if auto.matched_text == "欢愉假面":
                 self.process_mask()
@@ -1065,6 +1065,8 @@ class DivergentUniverse:
                 self.process_save_management()
             elif auto.matched_text == "混沌药箱":
                 self.process_chaos_box()
+            elif auto.matched_text == "人才管理阶段":
+                self.process_talent_management()
             return True
         return False
 
@@ -1110,6 +1112,24 @@ class DivergentUniverse:
                 log.info("默认选择中间的面具")
                 auto.click_element(mask_positions[1], 'crop')
                 time.sleep(2)
+
+    def process_talent_management(self):
+        """
+        处理人才管理阶段界面：默认选择中间的区域卡片并确认
+        """
+        card_positions = [
+            (570 / 1920, 200 / 1080, 252 / 1920, 520 / 1080),
+            (835 / 1920, 200 / 1080, 251 / 1920, 520 / 1080),
+            (1097 / 1920, 200 / 1080, 252 / 1920, 520 / 1080),
+        ]
+        confirm_crop = (551 / 1920, 942 / 1080, 805 / 1920, 62 / 1080)
+
+        time.sleep(2)
+        log.info("默认选择中间的区域卡片")
+        auto.click_element(card_positions[1], 'crop')
+        time.sleep(1)
+        auto.click_element('确认', 'text', None, 10, crop=confirm_crop, include=True)
+        time.sleep(2)
 
     def process_equation(self):
         """

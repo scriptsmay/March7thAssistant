@@ -895,6 +895,13 @@ class SettingInterface(ScrollArea):
             tr("最大排队等待时间（分钟）"),
             ''
         )
+        self.cloudGameLoginTimeoutCard = RangeSettingCard1(
+            "cloud_game_login_timeout",
+            [1, 120],
+            FIF.DATE_TIME,
+            tr("登录超时时间（分钟）"),
+            tr("等待用户完成登录的最长时间，超时后将终止运行")
+        )
         # self.cloudGameVideoQualityCard = ComboBoxSettingCard2(
         #     "cloud_game_video_quality",
         #     FIF.VIDEO,
@@ -1461,6 +1468,7 @@ class SettingInterface(ScrollArea):
                     "ssl": {"title": tr("启用 SSL"), "description": tr("可选参数，是否启用 SSL"), "type": "bool"},
                     "starttls": {"title": tr("启用 STARTTLS"), "description": tr("可选参数，是否启用 STARTTLS"), "type": "bool"},
                     "ssl_unverified": {"title": tr("跳过证书验证"), "description": tr("可选参数，是否跳过 SSL 证书验证"), "type": "bool"},
+                    "plain_text": {"title": tr("纯文本模式"), "description": tr("可选参数，是否以纯文本格式发送邮件（适用于 Outlook 等邮箱）"), "type": "bool"},
                 },
                 "tutorial": """
 <h4>一、什么是 SMTP？</h4>
@@ -2616,6 +2624,7 @@ class SettingInterface(ScrollArea):
         self.CloudGameGroup.addSettingCard(self.browserHeadlessCard)
         self.browserHeadlessCard.addSettingCards([self.browserHeadlessRestartCard])
         self.CloudGameGroup.addSettingCard(self.cloudGameMaxQueueTimeCard)
+        self.CloudGameGroup.addSettingCard(self.cloudGameLoginTimeoutCard)
         # self.CloudGameGroup.addSettingCard(self.cloudGameVideoQualityCard)
         # self.CloudGameGroup.addSettingCard(self.cloudGameSmoothFirstCard)
         # self.CloudGameGroup.addSettingCard(self.cloudGameShowStatusCard)
