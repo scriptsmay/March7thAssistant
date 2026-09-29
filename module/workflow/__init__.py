@@ -44,6 +44,7 @@ STEP_TYPE_LABELS = {
     "play_audio": "播放音频",
     "send_message": "消息推送",
     "switch_screen": "切换界面",
+    "switch_account": "切换账号",
     "press_key": "按下按键",
     "wait": "等待",
     "if": "如果",
@@ -680,6 +681,9 @@ def normalize_step(step: dict) -> dict:
         "start": step.get("start", "") or "",
         "end": step.get("end", "") or "",
         "drag_duration": parse_float(step.get("drag_duration", 0.5), 0.5, 0.0),
+        "account_id": str(step.get("account_id", "") or ""),
+        "restart_game": bool(step.get("restart_game", True)),
+        "switch_timeout": parse_int(step.get("switch_timeout", 120), 120, 0),
     }
 
     normalized["children"] = [normalize_step(child) for child in step.get("children", []) if isinstance(child, dict)]
@@ -891,6 +895,17 @@ def _get_click_action_label(action: str) -> str:
     return action_labels.get(action, action)
 
 
+def _account_label_for_summary(account_id: str) -> str:
+    """步骤摘要里的账号显示名（尽力解析，失败回退原始值）。"""
+    if not account_id:
+        return ""
+    try:
+        from module.account import resolve_account_label
+        return resolve_account_label(int(account_id))
+    except Exception:
+        return str(account_id)
+
+
 def summarize_step(step: dict) -> tuple[str, str]:
     normalized = normalize_step(step)
     step_type = normalized["type"]
@@ -950,6 +965,11 @@ def summarize_step(step: dict) -> tuple[str, str]:
         target_text = screen_name or screen_id or tr("未选择目标界面")
         detail = screen_id if screen_name and screen_name != screen_id else ""
         return f"{label} · {target_text}", detail
+
+    if step_type == "switch_account":
+        account_text = _account_label_for_summary(normalized["account_id"]) or tr("未选择目标账号")
+        restart_text = tr("切换后重启游戏") if normalized["restart_game"] else tr("仅切换，不重启游戏")
+        return f"{label} · {account_text}", restart_text
 
     if step_type == "press_key":
         action_labels = {
@@ -1089,6 +1109,8 @@ class WorkflowRunner:
             return self._send_message(normalized), None
         if step_type == "switch_screen":
             return self._switch_screen(normalized), None
+        if step_type == "switch_account":
+            return self._switch_account(normalized), None
         if step_type == "press_key":
             return self._press_key(normalized), None
         if step_type == "wait":
@@ -1357,6 +1379,40 @@ class WorkflowRunner:
         from module.screen import screen as screen_manager
 
         screen_manager.change_to(target_screen)
+        return True
+
+    def _switch_account(self, step: dict) -> bool:
+        """切换到指定账号（注册表导入 + 可选重启游戏并等待进入）。"""
+        account_id = str(step.get("account_id", "") or "").strip()
+        if not account_id:
+            self._log("切换账号失败：未选择目标账号")
+            return False
+
+        from module.account import switch_account
+
+        restart_game = bool(step.get("restart_game", True))
+        timeout_s = int(step.get("switch_timeout", 120) or 0)
+        close_timeout = timeout_s if timeout_s > 0 else 120
+        try:
+            result = switch_account(int(account_id), close_timeout_s=close_timeout)
+        except (TypeError, ValueError):
+            self._log(f"切换账号失败：账号标识无效 {account_id}")
+            return False
+
+        if not result.ok:
+            self._log(f"切换账号失败：{result.message}")
+            return False
+
+        self._log(f"切换账号：{result.message}")
+        if restart_game:
+            self._log("切换账号后重启游戏…")
+            try:
+                from tasks.game import start_game
+                start_game()
+            except Exception as exc:
+                self._log(f"切换账号后启动游戏失败：{exc}")
+                return False
+            self._log("游戏已重新启动")
         return True
 
     def _press_key(self, step: dict) -> bool:

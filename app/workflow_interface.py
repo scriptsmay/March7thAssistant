@@ -69,6 +69,8 @@ from module.workflow import (
     to_workflow_relative_path,
 )
 
+from module.account import list_exported_accounts, resolve_account_label
+
 from .common.style_sheet import StyleSheet
 
 _SEMVER_RE = re.compile(
@@ -155,6 +157,7 @@ class StepEditDialog(QDialog):
         "play_audio",
         "send_message",
         "switch_screen",
+        "switch_account",
         "press_key",
         "wait",
         "if",
@@ -259,6 +262,12 @@ class StepEditDialog(QDialog):
         self.dragDurationSpin.setRange(0.0, 60.0)
         self.dragDurationSpin.setDecimals(2)
         self.dragDurationSpin.setSingleStep(0.1)
+        self.accountCombo = ComboBox(self)
+        self.restartGameCheck = CheckBox(tr("切换后重启游戏并等待进入"), self)
+        self.switchTimeoutSpin = SpinBox(self)
+        self.switchTimeoutSpin.setRange(0, 3600)
+        self.switchTimeoutSpin.setSpecialValueText(tr("默认"))
+        self.switchTimeoutSpin.setToolTip(tr("关闭游戏等待上限（秒），0 表示默认 120 秒"))
 
         self._add_row(tr("步骤类型"), self.typeCombo, key="type")
         self._add_row(tr("条件类型"), self.conditionTypeCombo, key="condition")
@@ -266,6 +275,9 @@ class StepEditDialog(QDialog):
         self._add_row(tr("目标文字"), self.textEdit, key="text")
         self._add_row(tr("音频路径"), self.audioPathEdit, self.audioBrowseButton, key="audio")
         self._add_row(tr("目标界面"), self.screenTargetCombo, key="target_screen")
+        self._add_row(tr("目标账号"), self.accountCombo, key="account")
+        self._add_row(tr("重启游戏"), self.restartGameCheck, key="restart_game")
+        self._add_row(tr("切换超时"), self.switchTimeoutSpin, key="switch_timeout")
         self._add_row(tr("检测区域"), self.cropEdit, key="crop")
         self._add_row(tr("图片阈值"), self.thresholdSpin, key="threshold")
         self._add_row(tr("重试次数"), self.maxRetriesSpin, key="retries")
@@ -300,6 +312,7 @@ class StepEditDialog(QDialog):
         self.cancelButton.clicked.connect(self.reject)
 
         self._load_screen_targets()
+        self._load_account_targets()
         self._load_original_step()
         self._update_visible_rows()
 
@@ -356,6 +369,9 @@ class StepEditDialog(QDialog):
         self.startPointEdit.setText(format_point_expression(self.original_step.get("start", "")))
         self.endPointEdit.setText(format_point_expression(self.original_step.get("end", "")))
         self.dragDurationSpin.setValue(self.original_step.get("drag_duration", 0.5))
+        self._set_account_target(self.original_step.get("account_id", ""))
+        self.restartGameCheck.setChecked(bool(self.original_step.get("restart_game", True)))
+        self.switchTimeoutSpin.setValue(int(self.original_step.get("switch_timeout", 120) or 0))
 
     def _current_step_type(self) -> str:
         return self.STEP_TYPES[self.typeCombo.currentIndex()]
@@ -387,6 +403,8 @@ class StepEditDialog(QDialog):
             visible_rows.update({"text", "with_screenshot"})
         elif step_type == "switch_screen":
             visible_rows.update({"target_screen"})
+        elif step_type == "switch_account":
+            visible_rows.update({"account", "restart_game", "switch_timeout"})
         elif step_type == "press_key":
             visible_rows.update({"key", "key_duration", "key_action"})
         elif step_type == "wait":
@@ -445,6 +463,32 @@ class StepEditDialog(QDialog):
         self.screenTargetCombo.addItem(display_name, userData=target_screen)
         self.screenTargetCombo.setCurrentIndex(self.screenTargetCombo.count() - 1)
 
+    def _load_account_targets(self):
+        self.accountCombo.clear()
+        accounts = []
+        try:
+            accounts = list_exported_accounts()
+        except Exception:
+            accounts = []
+        for account in accounts:
+            self.accountCombo.addItem(f"{account.display_name} ({account.account_id})", userData=str(account.account_id))
+        if not accounts:
+            self.accountCombo.addItem(tr("（无已导出账号，请先在「设置-账户」导出）"), userData="")
+
+    def _set_account_target(self, account_id: str):
+        if not account_id:
+            return
+        for index in range(self.accountCombo.count()):
+            if str(self.accountCombo.itemData(index) or "") == str(account_id):
+                self.accountCombo.setCurrentIndex(index)
+                return
+        try:
+            label = f"{resolve_account_label(int(account_id))} ({account_id})"
+        except Exception:
+            label = str(account_id)
+        self.accountCombo.addItem(label, userData=str(account_id))
+        self.accountCombo.setCurrentIndex(self.accountCombo.count() - 1)
+
     def _validate(self) -> tuple[bool, str]:
         step_type = self._current_step_type()
         condition_type = self._current_condition_type()
@@ -481,6 +525,10 @@ class StepEditDialog(QDialog):
                 return False, tr("请选择目标界面")
             if not can_change_to_screen_from_main(target_screen):
                 return False, tr("目标界面不可切换")
+
+        if step_type == "switch_account":
+            if not str(self.accountCombo.currentData() or "").strip():
+                return False, tr("请选择目标账号")
 
         if step_type == "press_key" and not self.keyEdit.text().strip():
             return False, tr("请输入按键名")
@@ -542,6 +590,9 @@ class StepEditDialog(QDialog):
             "start": self.startPointEdit.text().strip(),
             "end": self.endPointEdit.text().strip(),
             "drag_duration": self.dragDurationSpin.value(),
+            "account_id": str(self.accountCombo.currentData() or "").strip(),
+            "restart_game": self.restartGameCheck.isChecked(),
+            "switch_timeout": self.switchTimeoutSpin.value(),
             "children": copy.deepcopy(self.original_step.get("children", [])) if step_type in self.CONTROL_STEP_TYPES else [],
         }
         return normalize_step(step)
