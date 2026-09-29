@@ -222,6 +222,7 @@ weekly_divergent_level: 5 # 执行差分宇宙时的难度等级，取值范围 
 weekly_divergent_timestamp: 0 # 上次检测到完成差分宇宙积分奖励的时间戳，用于记录和控制运行频率。
 weekly_divergent_bonus_enable: false # 在领取积分奖励后自动执行饰品提取消耗沉浸器。true 开启，false 关闭。
 weekly_divergent_stable_mode: false # 是否启用差分宇宙低性能兼容模式，建议仅在低性能设备开启，可以提高事件和随意门交互的成功率（云游戏强制使用此模式）。true 开启，false 关闭。
+divergent_auto_save_enable: true # 探索成功后自动保存到第一个空存档位；没有空位时跳过。true 开启，false 关闭。
 
 # 差分宇宙站点优先级配置
 divergent_station_priority_enable: false # 是否启用自定义站点优先级。true 开启，false 关闭。关闭时使用默认优先级。
@@ -278,7 +279,7 @@ genshin_starRail_fps_unlocker_path: .\3rdparty\Genshin_StarRail_fps_unlocker
 # 忘却之庭配置
 forgottenhall_enable: false # 是否启用混沌回忆功能。true 开启，false 关闭。
 forgottenhall_level: # 混沌回忆关卡范围，设置允许尝试的关卡等级范围。
-  - 9
+  - 10
   - 12
 # 混沌回忆队伍配置，详细配置每个队伍成员及其秘技使用次数。
 # 数字代表秘技使用次数，其中 -1 代表最后一个放秘技和普攻的角色。
@@ -393,6 +394,7 @@ hotkey_auto_battle: v # 设置自动战斗的按键。
 
 # 图形界面快捷键设置
 hotkey_stop_task: f10 # 设置停止任务的全局快捷键（支持后台）。
+hotkey_pause_task: f8 # 设置暂停/继续任务的全局快捷键（支持后台，仅内置任务有效）。
 hotkey_toggle_autoplot: f9 # 设置切换自动对话的全局快捷键（支持后台）。
 hotkey_toggle_autoplot_enable: false # 是否启用自动对话全局快捷键。启用后可通过快捷键快速切换自动对话的开/关状态。
 
@@ -589,6 +591,12 @@ notify_pushplus_channel: "" # 可选参数，Pushplus 的通知渠道。
 notify_pushplus_webhook: "" # 可选参数，Pushplus 的 Webhook URL。
 notify_pushplus_callbackUrl: "" # 可选参数，Pushplus 的回调 URL。
 
+# Qmsg 通知配置
+notify_qmsg_enable: false # 是否启用 Qmsg 通知。true 开启，false 关闭。
+notify_qmsg_key: "" # Qmsg 酱的 Key。
+notify_qmsg_qq: "" # 可选参数，指定接收通知的 QQ 号，不填则发送到该 Key 绑定的默认 QQ。
+notify_qmsg_mode: "" # 可选参数，发送模式，例如 send（默认）或 group。
+
 # 企业微信应用通知配置
 # 支持发送截图
 notify_wechatworkapp_enable: false # 是否启用企业微信应用通知。true 开启，false 关闭。
@@ -625,7 +633,7 @@ notify_pushdeer_url: "" # 可选参数，自定义 Pushdeer 服务的 URL。
 notify_lark_enable: false # 是否启用飞书通知。true 开启，false 关闭。
 notify_lark_webhook: "" # 飞书通知的 Webhook URL。
 notify_lark_content: "" # 飞书通知的内容。
-notify_lark_keyword: "" # 可选参数，如果设置了关键词安全设置，此处填写关键词， 如无关键词请设置为空，而非空字符串。（因onepush库bug）
+notify_lark_keyword: "" # 可选参数，如果设置了关键词安全设置，此处填写关键词，如无关键词请设置为空。
 notify_lark_sign: "" # 可选参数，如果设置了签名安全设置，此处填写签名。
 notify_lark_imageenable: false # 是否启用图片信息发送，true 开启，false 关闭，默认为关闭
 notify_lark_appid: "" # 如启用图片信息发送，则必填，需自建飞书应用获取，详见https://open.feishu.cn/document/server-docs/api-call-guide/terminology

@@ -17,7 +17,8 @@ from .card.messagebox_custom import MessageBoxEdit
 from .card.stationprioritysettingcard import StationPrioritySettingCard
 from module.config import cfg
 from module.notification import init_notifiers
-from module.localization import tr
+from module.localization import tr, tn
+from module.localization.languages import AUTO_LANGUAGE, available_languages
 from tasks.weekly.divergent_universe import DivergentUniverse
 from tasks.base.tasks import start_task
 from .tools.check_update import checkUpdate
@@ -506,27 +507,27 @@ class SettingInterface(ScrollArea):
         )
         self.emberSpecialPassEnableCard = TimestampSwitchSettingCard(
             FIF.CALENDAR,
-            tr("启用「每月自动购买{}」").format(tr("星轨专票")),
-            tr("每月自动尝试在余烬兑换中购买「{}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(tr("星轨专票")),
+            tr("启用「每月自动购买{item}」").format(item=tr("星轨专票")),
+            tr("每月自动尝试在余烬兑换中购买「{item}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(item=tr("星轨专票")),
             "asset_ember_special_pass_enable",
             "asset_ember_special_pass_timestamp",
-            tr("上次完成{}购买的时间").format(tr("星轨专票")),
+            tr("上次完成{item}购买的时间").format(item=tr("星轨专票")),
         )
         self.emberRegularPassEnableCard = TimestampSwitchSettingCard(
             FIF.CALENDAR,
-            tr("启用「每月自动购买{}」").format(tr("星轨通票")),
-            tr("每月自动尝试在余烬兑换中购买「{}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(tr("星轨通票")),
+            tr("启用「每月自动购买{item}」").format(item=tr("星轨通票")),
+            tr("每月自动尝试在余烬兑换中购买「{item}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(item=tr("星轨通票")),
             "asset_ember_regular_pass_enable",
             "asset_ember_regular_pass_timestamp",
-            tr("上次完成{}购买的时间").format(tr("星轨通票")),
+            tr("上次完成{item}购买的时间").format(item=tr("星轨通票")),
         )
         self.emberTracksOfDestinyEnableCard = TimestampSwitchSettingCard(
             FIF.CALENDAR,
-            tr("启用「每月自动购买{}」").format(tr("命运的足迹")),
-            tr("每月自动尝试在余烬兑换中购买「{}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(tr("命运的足迹")),
+            tr("启用「每月自动购买{item}」").format(item=tr("命运的足迹")),
+            tr("每月自动尝试在余烬兑换中购买「{item}」，点击最大值并确认后记录时间，并在每月 1 号刷新").format(item=tr("命运的足迹")),
             "asset_ember_tracks_of_destiny_enable",
             "asset_ember_tracks_of_destiny_timestamp",
-            tr("上次完成{}购买的时间").format(tr("命运的足迹")),
+            tr("上次完成{item}购买的时间").format(item=tr("命运的足迹")),
         )
 
         self.CurrencywarsGroup = SettingCardGroup(tr("货币"), self.scrollWidget)
@@ -625,6 +626,12 @@ class SettingInterface(ScrollArea):
             tr('启用低性能兼容模式'),
             tr("建议仅在低性能设备开启，可以提高事件和随意门交互的成功率（云游戏强制使用此模式）"),
             "weekly_divergent_stable_mode"
+        )
+        self.divergentAutoSaveCard = SwitchSettingCard1(
+            FIF.SAVE_AS,
+            tr("自动记录差分宇宙存档"),
+            tr("探索成功后保存到第一个空存档位；存档已满时跳过"),
+            "divergent_auto_save_enable"
         )
 
         self.stationPriorityCard = StationPrioritySettingCard(
@@ -1746,6 +1753,51 @@ class SettingInterface(ScrollArea):
 
 """
             },
+            "qmsg": {
+                "icon": FIF.MAIL,
+                "display_name": "Qmsg",
+                "description": tr("Qmsg 酱 QQ 推送"),
+                "params": {
+                    "key": {"title": tr("推送密钥"), "description": tr("Qmsg 酱分配的 Key")},
+                    "qq": {"title": tr("QQ 号"), "description": tr("可选参数，指定接收通知的 QQ 号，不填则发送到该 Key 绑定的默认 QQ")},
+                    "mode": {"title": tr("发送模式"), "description": tr("可选参数，例如 send（默认）或 group")},
+                },
+                "tutorial": """
+<h4>一、什么是 Qmsg？</h4>
+<p>Qmsg 酱是一个基于 QQ 的消息推送服务，可以把程序通知发送到指定 QQ 或群聊场景。</p>
+
+<h4>二、配置步骤</h4>
+
+<p><b>第 1 步：注册并获取 Key</b></p>
+<ol>
+<li>访问 <a href="https://qmsg.zendee.cn/">Qmsg 酱官网</a></li>
+<li>登录或注册账号后，进入控制台</li>
+<li>创建或查看你的推送 Key，并复制保存</li>
+</ol>
+
+<p><b>第 2 步：确认接收目标</b></p>
+<ol>
+<li>默认情况下，消息会发送到该 Key 绑定的 QQ</li>
+<li>如果需要发送给其他 QQ，可额外填写「QQ 号」参数</li>
+<li>如需群发等其他能力，可按实际需要填写「发送模式」</li>
+</ol>
+
+<p><b>第 3 步：配置到 March7thAssistant</b></p>
+<ol>
+<li>在本软件中，找到「消息推送」设置</li>
+<li>开启「启用消息推送」总开关</li>
+<li>找到「Qmsg」通知，开启开关</li>
+<li>点击「推送密钥」右侧的「修改」按钮，粘贴获取的 Key</li>
+<li>如有需要，填写「QQ 号」和「发送模式」</li>
+<li>点击下方的「发送消息」按钮测试</li>
+</ol>
+
+<div class="tip">💡 <b>提示</b>：如果只给当前 Key 绑定的默认 QQ 发送消息，通常只需要填写 Key 即可。</div>
+
+<h4>三、参考链接</h4>
+<p><a href="https://qmsg.zendee.cn/api.html">Qmsg 酱接口文档</a></p>
+"""
+            },
             "wechatworkbot": {
                 "icon": FIF.MAIL,
                 "display_name": tr("企业微信机器人"),
@@ -2260,7 +2312,7 @@ class SettingInterface(ScrollArea):
                 notifyEnableCard = ExpandableSwitchSettingCard(
                     enable_key,
                     provider_meta.get("icon", FIF.MAIL),
-                    tr('启用 {} 通知').format(display_name),
+                    tr('启用 {name} 通知').format(name=display_name),
                     provider_description
                 )
                 notifyEnableCard.switchChanged.connect(self.__refreshNotifiers)
@@ -2284,7 +2336,7 @@ class SettingInterface(ScrollArea):
             else:
                 notifyEnableCard = SwitchSettingCard1(
                     provider_meta.get("icon", FIF.MAIL),
-                    tr('启用 {} 通知').format(display_name),
+                    tr('启用 {name} 通知').format(name=display_name),
                     provider_description,
                     enable_key,
                     self
@@ -2438,7 +2490,7 @@ class SettingInterface(ScrollArea):
             FIF.LANGUAGE,
             '界面语言 / 界面語言 / 日本語 / 인터페이스 언어 / UI Language',
             '切换后即时生效 / 切換後即時生效 / 切り替え後すぐ適用 / 변경 즉시 적용 / Takes effect immediately',
-            texts={'自动': 'auto', '简体中文': 'zh_CN', '繁體中文': 'zh_TW', '日本語': 'ja_JP', '한국어': 'ko_KR', 'English': 'en_US'}
+            texts={'自动': AUTO_LANGUAGE, **available_languages()}
         )
         self.telemetryCard = SwitchSettingCardWithAction(
             tr("查看说明"),
@@ -2563,6 +2615,7 @@ class SettingInterface(ScrollArea):
         self.UniverseGroup.addSettingCard(self.weeklyDivergentLevelCard)
         self.UniverseGroup.addSettingCard(self.stationPriorityCard)
         self.UniverseGroup.addSettingCard(self.weeklyDivergentStableModeCard)
+        self.UniverseGroup.addSettingCard(self.divergentAutoSaveCard)
 
         self.UniverseGroup.addSettingCard(self.universeEnableCard)
         self.universeEnableCard.addSettingCards([
@@ -2850,8 +2903,8 @@ class SettingInterface(ScrollArea):
         daily_count = DivergentUniverse.get_recorded_run_count("daily")
         weekly_count = DivergentUniverse.get_recorded_run_count("weekly")
         return "，".join([
-            tr("今日已完成 {} 次").format(daily_count),
-            tr("本周已完成 {} 次").format(weekly_count),
+            tn("今日已完成 {count} 次", daily_count),
+            tn("本周已完成 {count} 次", weekly_count),
         ])
 
     def __showTelemetryInfo(self):
@@ -2885,6 +2938,7 @@ class SettingInterface(ScrollArea):
             "serverchanturbo", # Server酱 Turbo
             "lark",            # 飞书
             "pushplus",        # Pushplus
+            "qmsg",            # Qmsg
             "serverchan3",     # Server酱³
             "wechatworkapp",   # 企业微信应用
             "dingtalk",        # 钉钉
@@ -2986,7 +3040,7 @@ class SettingInterface(ScrollArea):
         """显示通知方式配置教程对话框"""
         from .card.messagebox_custom import MessageBoxTutorial
         dialog = MessageBoxTutorial(
-            tr("{} 配置教程").format(provider_name),
+            tr("{name} 配置教程").format(name=provider_name),
             tutorial_html,
             self.window()
         )
