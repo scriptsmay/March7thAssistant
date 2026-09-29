@@ -14,6 +14,7 @@
 # 可用的任务列表（任务ID -> 名称 msgid）
 AVAILABLE_TASKS = {
     "main": "完整运行",
+    "multiaccount": "多账号一条龙",
     "routine": "日常",
     "daily": "每日实训",
     "power": "清体力",
@@ -51,6 +52,7 @@ TASK_NAMES = AVAILABLE_TASKS
 # 启动器、原生界面类子任务不支持暂停。判定逻辑见 LogInterface._resolvePauseSupport。
 PAUSABLE_TASKS = frozenset({
     "main",
+    "multiaccount",
     "routine",
     "daily",
     "power",

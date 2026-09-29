@@ -143,6 +143,7 @@ from utils.screenshot_util import save_error_screenshot
 import tasks.game as game
 from module.game import cloud_game
 import tasks.reward as reward
+import tasks.multi_account as multi_account
 import tasks.challenge as challenge
 import tasks.version as version
 import tasks.version.app_update as app_update_task
@@ -350,6 +351,9 @@ def main(action=None, no_run_immediately=False, workflow_name=None, workflow_ste
     # 子任务 更新项目
     elif action in ["universe_update", "fight_update", "mobileui_update"]:
         run_sub_task_update(action)
+
+    elif action == "multiaccount":
+        return multi_account.start()
 
     elif action == "game":
         game.start()
