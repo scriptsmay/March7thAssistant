@@ -10,7 +10,7 @@ import pytest
 
 import tasks.multi_account as multi_account
 from module.account import ExportedAccount
-from tasks.multi_account import RunPlan, _fmt_duration, validate_run_plan
+from tasks.multi_account import RunPlan, _fmt_duration, resolve_account_selectors, validate_run_plan
 
 
 class _FakeCfg:
@@ -23,7 +23,7 @@ class _FakeCfg:
 
 def _make_plan(**overrides):
     params = {
-        "accounts": [123456789],
+        "accounts": ["123456789"],
         "sub_task": "main",
         "timeout_minutes": 120,
         "max_retries": 1,
@@ -41,6 +41,29 @@ class TestFormatDuration:
         assert _fmt_duration(59) == "0m59s"
         assert _fmt_duration(61) == "1m1s"
         assert _fmt_duration(3661) == "61m1s"
+
+
+class TestResolveSelectors:
+    def _accounts(self):
+        return [
+            ExportedAccount(111, "主号", "x.reg", 0.0),
+            ExportedAccount(222, "小号", "y.reg", 0.0),
+            ExportedAccount(333, "333", "z.reg", 0.0),
+        ]
+
+    def test_uid_and_name(self, monkeypatch):
+        monkeypatch.setattr(multi_account, "list_exported_accounts", self._accounts)
+        ids, errors = resolve_account_selectors(["主号", "222"])
+        assert ids == [111, 222]
+        assert errors == []
+
+    def test_unknown_name_lists_available(self, monkeypatch):
+        monkeypatch.setattr(multi_account, "list_exported_accounts", self._accounts)
+        ids, errors = resolve_account_selectors(["不存在"])
+        assert ids == []
+        assert len(errors) == 1
+        assert "未匹配到已导出账号" in errors[0]
+        assert "主号(111)" in errors[0]
 
 
 class TestValidateRunPlan:
@@ -61,13 +84,27 @@ class TestValidateRunPlan:
 
     def test_account_not_exported(self, monkeypatch):
         self._patch(monkeypatch)
-        errors = validate_run_plan(_make_plan(accounts=[1]))
+        errors = validate_run_plan(_make_plan(accounts=["1"]))
         assert any("尚未导出" in e for e in errors)
 
-    def test_invalid_account_value(self, monkeypatch):
+    def test_unknown_selector(self, monkeypatch):
         self._patch(monkeypatch)
         errors = validate_run_plan(_make_plan(accounts=["abc"]))
-        assert any("账号标识无效" in e for e in errors)
+        assert any("未匹配到已导出账号" in e for e in errors)
+
+    def test_name_selector_resolves(self, monkeypatch):
+        self._patch(monkeypatch, exported=(
+            ExportedAccount(111, "主号", "x.reg", 0.0),
+            ExportedAccount(222, "小号", "y.reg", 0.0),
+        ))
+        plan = _make_plan(accounts=["主号", "222"])
+        assert validate_run_plan(plan) == []
+        assert plan.resolved == [111, 222]
+
+    def test_duplicate_selector(self, monkeypatch):
+        self._patch(monkeypatch)
+        errors = validate_run_plan(_make_plan(accounts=["123456789", "123456789"]))
+        assert any("重复" in e for e in errors)
 
     def test_bad_sub_task(self, monkeypatch):
         self._patch(monkeypatch)

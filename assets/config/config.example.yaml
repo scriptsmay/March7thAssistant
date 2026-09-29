@@ -34,7 +34,7 @@ after_finish: None # 任务完成后的操作，可选值："None"（无操作�
 play_audio: false # true 播放，false 不播放。
 
 # 多账号一条龙（本地游戏模式；先在「设置-账户」页导出各账号，再把账号 UID 填到下面的列表）
-multi_account_run_accounts: [] # 要依次运行的账号 UID 列表（按顺序执行，例如 [100000001, 100000002]）。留空时该任务不可运行。
+multi_account_run_accounts: [] # 要依次运行的账号列表（按顺序执行）：可写 UID 或「设置-账户」里显示的账号名，例如 [100000001, "小号"]。留空时该任务不可运行。
 multi_account_per_account_task: main # 每个账号执行的任务：main（完整运行）、routine（日常）、daily（每日实训）、power（清体力）、redemption（兑换码）。
 multi_account_timeout_minutes: 120 # 单个账号最长运行时间（分钟），超时视为失败并按策略处理；0 表示不限制。
 multi_account_max_retries: 1 # 单个账号失败后的重试次数；0 表示不重试。

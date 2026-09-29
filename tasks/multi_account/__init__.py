@@ -63,7 +63,8 @@ class RunPlan:
 
     def __init__(self, accounts, sub_task, timeout_minutes, max_retries, on_failure,
                  restore_first, notify_summary):
-        self.accounts = accounts
+        self.accounts = accounts          # 原始选择器（UID 字符串或账号名）
+        self.resolved = []                # 校验后解析出的 UID 列表（validate_run_plan 填充）
         self.sub_task = sub_task
         self.timeout_minutes = timeout_minutes
         self.max_retries = max_retries
@@ -79,10 +80,9 @@ def load_run_plan() -> RunPlan:
         raw_accounts = [raw_accounts]
     accounts = []
     for item in raw_accounts:
-        try:
-            accounts.append(int(item))
-        except (TypeError, ValueError):
-            accounts.append(item)  # 保留原始值，交给校验统一报错
+        text = str(item).strip()
+        if text:
+            accounts.append(text)  # 保留原始选择器（UID 或账号名），校验/解析阶段统一处理
 
     return RunPlan(
         accounts=accounts,
@@ -95,21 +95,59 @@ def load_run_plan() -> RunPlan:
     )
 
 
+def resolve_account_selectors(selectors, exported_accounts=None) -> tuple[list[int], list[str]]:
+    """把配置中的账号选择器（UID 或账号显示名）解析为 UID 列表。
+
+    返回 (resolved_ids, errors)：resolved_ids 保持输入顺序；无法解析的条目逐条报错。
+    """
+    if exported_accounts is None:
+        try:
+            exported_accounts = list_exported_accounts()
+        except Exception:
+            exported_accounts = []
+
+    by_name = {}
+    for account in exported_accounts:
+        by_name.setdefault(str(account.display_name), account.account_id)
+
+    resolved: list[int] = []
+    errors: list[str] = []
+    for selector in selectors:
+        text = str(selector).strip()
+        if not text:
+            continue
+        if text.isdigit():
+            resolved.append(int(text))
+        elif text in by_name:
+            resolved.append(by_name[text])
+        else:
+            available = "、".join(f"{account.display_name}({account.account_id})" for account in exported_accounts[:12]) or "无"
+            errors.append(f"选择器「{text}」未匹配到已导出账号（现有：{available}）")
+    return resolved, errors
+
+
 def validate_run_plan(plan: RunPlan) -> list[str]:
     """校验运行计划，返回错误列表（空列表 = 可运行）。"""
     errors = []
     if not plan.accounts:
-        errors.append("未配置账号：请先在「设置-账户」页导出账号，再到 config.yaml 的 multi_account_run_accounts 填写 UID 列表")
+        errors.append("未配置账号：请先在「设置-账户」页导出账号，再到 config.yaml 的 multi_account_run_accounts 填写（可写 UID 或账号名）")
 
-    exported_ids = set()
     try:
-        exported_ids = {account.account_id for account in list_exported_accounts()}
+        exported_accounts = list_exported_accounts()
     except Exception:
-        exported_ids = set()
-    for account_id in plan.accounts:
-        if not isinstance(account_id, int):
-            errors.append(f"账号标识无效：{account_id!r}（需为数字 UID）")
-        elif account_id not in exported_ids:
+        exported_accounts = []
+    exported_ids = {account.account_id for account in exported_accounts}
+
+    resolved, resolve_errors = resolve_account_selectors(plan.accounts, exported_accounts)
+    plan.resolved = resolved
+    errors.extend(resolve_errors)
+
+    seen_ids = set()
+    for account_id in resolved:
+        if account_id in seen_ids:
+            errors.append(f"账号 {account_id} 在 multi_account_run_accounts 中重复出现")
+        seen_ids.add(account_id)
+        if account_id not in exported_ids:
             errors.append(f"账号 {account_id} 尚未导出（缺少 settings/accounts/{account_id}.reg）")
 
     if plan.sub_task not in ALLOWED_SUB_TASKS:
@@ -323,7 +361,7 @@ def _restore_account(ledger: Ledger, original_id: int):
 def _summarize(plan: RunPlan, ledger: Ledger, results: list, ok_all: bool, run_id: str):
     ok_count = sum(1 for result in results if result["ok"])
     fail_count = len(results) - ok_count
-    header = f"【多账号一条龙】{run_id} 结束：成功 {ok_count}/{len(plan.accounts)}"
+    header = f"【多账号一条龙】{run_id} 结束：成功 {ok_count}/{len(plan.resolved) if plan.resolved else len(plan.accounts)}"
     body_lines = []
     for result in results:
         state = "成功" if result["ok"] else f"失败（{result['reason']}）"
@@ -355,7 +393,7 @@ def start() -> bool:
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     ledger = Ledger(run_id)
-    account_ids = plan.accounts
+    account_ids = plan.resolved
     total = len(account_ids)
     _log(f"开始：run_id={run_id}，共 {total} 个账号，子任务={plan.sub_task}，"
          f"超时={plan.timeout_minutes if plan.timeout_minutes else '不限制'} 分钟/账号，"
