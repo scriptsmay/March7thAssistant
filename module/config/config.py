@@ -18,6 +18,9 @@ _ENV_OVERRIDE_MAP = {
     "MARCH7TH_LOG_LEVEL": ("log_level", lambda v: v.upper()),  # 日志等级：INFO, DEBUG, WARNING, ERROR
     "MARCH7TH_AFTER_FINISH": ("after_finish", lambda v: v),  # 任务完成后操作：None, Exit, Loop, Shutdown, Sleep, Hibernate, Restart, Logoff, TurnOffDisplay, RunScript
     "MARCH7TH_BROWSER_TYPE": ("browser_type", lambda v: v),  # 浏览器类型：integrated, edge, chrome
+    "MARCH7TH_CHECK_UPDATE": ("check_update", lambda v: v.lower() in ("true", "1")),  # 是否检查更新
+    "MARCH7TH_PAUSE_AFTER_SUCCESS": ("pause_after_success", lambda v: v.lower() in ("true", "1")),  # 成功后是否暂停
+    "MARCH7TH_EXIT_AFTER_FAILURE": ("exit_after_failure", lambda v: v.lower() in ("true", "1")),  # 失败后是否直接退出
 }
 
 # 反向映射：配置键 -> 环境变量名
@@ -125,11 +128,15 @@ class Config(metaclass=SingletonMeta):
             if os.path.exists(backup_path):
                 # 保留更早的备份，改用时间戳命名
                 backup_path = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
-            try:
-                os.replace(path, backup_path)
-            except OSError:
-                # 目标是挂载点（如 Docker 单文件挂载）时无法移动，退化为复制备份
+            if os.path.islink(path):
+                # 目标为符号链接（共享数据目录场景）时移动会带走链接本体，改为复制内容
                 shutil.copyfile(path, backup_path)
+            else:
+                try:
+                    os.replace(path, backup_path)
+                except OSError:
+                    # 目标是挂载点（如 Docker 单文件挂载）时无法移动，退化为复制备份
+                    shutil.copyfile(path, backup_path)
             return backup_path
         except Exception:
             return None
@@ -202,7 +209,7 @@ class Config(metaclass=SingletonMeta):
         return changed
 
     def save_config(self):
-        """保存配置到文件（先写临时文件再原子替换；目标为挂载点时退化为原地覆盖写入）"""
+        """保存配置到文件（先写临时文件再原子替换；目标为符号链接或挂载点时退化为原地覆盖写入）"""
         config_dir = os.path.dirname(os.path.abspath(self.config_path))
         # 临时文件名唯一，避免多进程同时保存时互相截断
         tmp_fd, tmp_path = tempfile.mkstemp(
@@ -213,16 +220,24 @@ class Config(metaclass=SingletonMeta):
                 self.yaml.dump(self.config, file)
                 file.flush()
                 os.fsync(file.fileno())
-            try:
-                os.replace(tmp_path, self.config_path)
-            except OSError:
-                # 目标是挂载点（如 Docker 单文件挂载的 config.yaml）时 rename 会报 EBUSY，
-                # 退化为原地覆盖写入（非原子，但保证可保存）
+            if os.path.islink(self.config_path):
+                # 目标为符号链接（如指向共享数据目录的 config.yaml）：原地覆盖，保留链接本体
                 with open(tmp_path, 'rb') as src, open(self.config_path, 'wb') as dst:
                     shutil.copyfileobj(src, dst)
                     dst.flush()
                     os.fsync(dst.fileno())
                 os.remove(tmp_path)
+            else:
+                try:
+                    os.replace(tmp_path, self.config_path)
+                except OSError:
+                    # 目标是挂载点（如 Docker 单文件挂载的 config.yaml）时 rename 会报 EBUSY，
+                    # 退化为原地覆盖写入（非原子，但保证可保存）
+                    with open(tmp_path, 'rb') as src, open(self.config_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                        dst.flush()
+                        os.fsync(dst.fileno())
+                    os.remove(tmp_path)
         except Exception:
             try:
                 if os.path.exists(tmp_path):

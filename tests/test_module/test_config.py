@@ -49,6 +49,19 @@ class TestGetEnvOverride:
         assert has_override is True
         assert value == "Shutdown"
 
+    def test_unattended_switches(self, monkeypatch):
+        """无人值守开关：check_update / pause_after_success / exit_after_failure 可被环境变量覆盖"""
+        cases = [
+            ("MARCH7TH_CHECK_UPDATE", "check_update", False),
+            ("MARCH7TH_PAUSE_AFTER_SUCCESS", "pause_after_success", False),
+            ("MARCH7TH_EXIT_AFTER_FAILURE", "exit_after_failure", True),
+        ]
+        for env_name, key, expected in cases:
+            monkeypatch.setenv(env_name, "true" if expected else "false")
+            has_override, value = _get_env_override(key)
+            assert has_override is True, env_name
+            assert value is expected, env_name
+
 
 class TestEnvOverrideMap:
     def test_all_mappings_have_converter(self):
@@ -320,3 +333,43 @@ class TestConfigPersistence:
         out = capsys.readouterr().out
         assert "first error" in out
         assert "second error" not in out
+
+    def test_save_config_keeps_symlink(self, tmp_path):
+        """目标为符号链接（共享数据目录）时保存应原地覆盖，保留链接本体"""
+        target = tmp_path / "shared-config.yaml"
+        target.write_text("key1: old\nnested:\n  a: 0\n", encoding="utf-8")
+        link = tmp_path / "config.yaml"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("当前环境不支持创建符号链接（需要管理员或开发者模式）")
+
+        config = self._create_config(tmp_path)
+        config.config = {"key1": "new", "nested": {"a": 1}}
+        config.save_config()
+
+        assert link.is_symlink()  # 链接本体保留
+        from ruamel.yaml import YAML
+        data = YAML().load(target.read_text(encoding="utf-8"))
+        assert data["key1"] == "new"
+        assert data["nested"]["a"] == 1
+        assert list(tmp_path.glob("config.yaml.*.tmp")) == []
+
+    def test_broken_config_backup_keeps_symlink(self, tmp_path, monkeypatch):
+        """符号链接目标损坏时，备份不应移动链接本体"""
+        target = tmp_path / "shared-config.yaml"
+        target.write_text("", encoding="utf-8")
+        link = tmp_path / "config.yaml"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("当前环境不支持创建符号链接（需要管理员或开发者模式）")
+
+        config = self._create_config(tmp_path)
+        monkeypatch.setattr(config, "_notify_config_error", lambda message: None)
+        config._load_config()
+
+        assert link.is_symlink()  # 未被移走
+        backup = tmp_path / "config.yaml.bak"
+        assert backup.exists()
+        assert backup.read_text(encoding="utf-8") == ""
