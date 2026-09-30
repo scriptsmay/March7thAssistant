@@ -62,6 +62,31 @@ class TestGetEnvOverride:
             assert has_override is True, env_name
             assert value is expected, env_name
 
+    def test_multi_account_accounts_list(self, monkeypatch):
+        """多账号选择器：逗号/分号分隔转列表，空白项剔除"""
+        monkeypatch.setenv("MARCH7TH_MULTI_ACCOUNT_RUN_ACCOUNTS", "106535892, 122149825")
+        has_override, value = _get_env_override("multi_account_run_accounts")
+        assert has_override is True
+        assert value == ["106535892", "122149825"]
+
+        monkeypatch.setenv("MARCH7TH_MULTI_ACCOUNT_RUN_ACCOUNTS", "106535892;小号;")
+        _, value = _get_env_override("multi_account_run_accounts")
+        assert value == ["106535892", "小号"]
+
+        monkeypatch.setenv("MARCH7TH_MULTI_ACCOUNT_RUN_ACCOUNTS", "  ")
+        _, value = _get_env_override("multi_account_run_accounts")
+        assert value == []
+
+    def test_multi_account_accounts_overrides_empty_config(self, monkeypatch):
+        """config.yaml 中选择器为空（被旧版打包程序重写）时，环境变量仍能提供账号"""
+        monkeypatch.setenv("MARCH7TH_MULTI_ACCOUNT_RUN_ACCOUNTS", "106535892")
+        from module.config.config import Config
+
+        config = MagicMock()
+        config.config = {"multi_account_run_accounts": []}
+        config.get_value = lambda key, default=None: Config.get_value(config, key, default)
+        assert config.get_value("multi_account_run_accounts", []) == ["106535892"]
+
 
 class TestEnvOverrideMap:
     def test_all_mappings_have_converter(self):
