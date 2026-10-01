@@ -21,6 +21,9 @@ _ENV_OVERRIDE_MAP = {
     "MARCH7TH_CHECK_UPDATE": ("check_update", lambda v: v.lower() in ("true", "1")),  # 是否检查更新
     "MARCH7TH_PAUSE_AFTER_SUCCESS": ("pause_after_success", lambda v: v.lower() in ("true", "1")),  # 成功后是否暂停
     "MARCH7TH_EXIT_AFTER_FAILURE": ("exit_after_failure", lambda v: v.lower() in ("true", "1")),  # 失败后是否直接退出
+    # CLI「首次使用」门槛（main.first_run）依据。无人值守注入 true：
+    # 打包版更新流程会把共享 config.yaml 重置回模板默认（auto_update: false），CLI 将全部拒启。
+    "MARCH7TH_AUTO_UPDATE": ("auto_update", lambda v: v.lower() in ("true", "1")),
     # 多账号选择器：逗号/分号分隔的 UID 或账号名。无人值守场景可由外部启动器注入，
     # 使选择器不依赖 config.yaml —— 旧版打包程序按自身模板重写配置时会丢弃未知键。
     "MARCH7TH_MULTI_ACCOUNT_RUN_ACCOUNTS": ("multi_account_run_accounts", lambda v: [x.strip() for x in v.replace(";", ",").split(",") if x.strip()]),

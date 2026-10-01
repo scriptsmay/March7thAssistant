@@ -50,11 +50,12 @@ class TestGetEnvOverride:
         assert value == "Shutdown"
 
     def test_unattended_switches(self, monkeypatch):
-        """无人值守开关：check_update / pause_after_success / exit_after_failure 可被环境变量覆盖"""
+        """无人值守开关：check_update / pause_after_success / exit_after_failure / auto_update 可被环境变量覆盖"""
         cases = [
             ("MARCH7TH_CHECK_UPDATE", "check_update", False),
             ("MARCH7TH_PAUSE_AFTER_SUCCESS", "pause_after_success", False),
             ("MARCH7TH_EXIT_AFTER_FAILURE", "exit_after_failure", True),
+            ("MARCH7TH_AUTO_UPDATE", "auto_update", True),
         ]
         for env_name, key, expected in cases:
             monkeypatch.setenv(env_name, "true" if expected else "false")
@@ -86,6 +87,16 @@ class TestGetEnvOverride:
         config.config = {"multi_account_run_accounts": []}
         config.get_value = lambda key, default=None: Config.get_value(config, key, default)
         assert config.get_value("multi_account_run_accounts", []) == ["106535892"]
+
+    def test_auto_update_overrides_false_config(self, monkeypatch):
+        """config.yaml 中 auto_update 为 false（配置被更新流程重置）时，环境变量仍能让 first_run 门槛放行"""
+        monkeypatch.setenv("MARCH7TH_AUTO_UPDATE", "true")
+        from module.config.config import Config
+
+        config = MagicMock()
+        config.config = {"auto_update": False}
+        config.get_value = lambda key, default=None: Config.get_value(config, key, default)
+        assert config.get_value("auto_update") is True
 
 
 class TestEnvOverrideMap:
