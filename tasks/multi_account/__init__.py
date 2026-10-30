@@ -8,7 +8,10 @@
 - 编排器负责：顺序控制、单账号超时、失败重试、失败策略（继续/中止）、
   结束后回切首个账号、汇总通知、运行台账（logs/multi_account/）；
 - 人工接管：沿用全局暂停（默认 F8）与停止（默认 F10）机制——暂停会同时停住
-  当前子进程的动作与编排器推进，停止会终止整个进程树。
+  当前子进程的动作与编排器推进，停止会终止整个进程树；
+- 状态隔离：上游把任务进度（`*_timestamp`、`already_used_codes` 等）与用户配置
+  混存在同一份 config.yaml，多账号共用会导致「先跑的账号打满后，后跑的账号
+  判定未刷新而静默跳过」。本模块在子进程前后做一次状态镜像，详见 state.py。
 
 配置项见 assets/config/config.example.yaml「多账号一条龙」分节。
 """
@@ -34,6 +37,7 @@ from module.config import cfg
 from module.logger import log
 from module.notification import notif
 from module.notification.notification import NotificationLevel
+from . import state
 from utils.console import pause_on_success
 from utils.pause import pause_ctl
 
@@ -304,6 +308,35 @@ def _run_child(plan: RunPlan, run_id: str, account_id: int, attempt: int) -> Chi
         return _wait_child(proc, plan.timeout_minutes, log_path)
 
 
+def _run_with_account_state(plan: RunPlan, run_id: str, account_id: int, label: str,
+                            attempt: int) -> ChildOutcome:
+    """以该账号自己的进度跑一次子进程，跑完把新进度归档回 state/{uid}.yaml。
+
+    时序（父进程只在 ① 与 ④ 两个窗口写 config.yaml，执行期间绝不写）：
+    ① 读 state/{uid}.yaml（缺省回退模板默认值）→ 写进 config.yaml
+    ② 拉起子进程（它读写的就是这份 config.yaml，与人工运行完全一致）
+    ③ 子进程退出（正常/失败/超时被 kill）
+    ④ 重读 config.yaml 抽出状态键 → 落盘 state/{uid}.yaml
+    """
+    account_state = state.load(account_id)
+    path = state.state_path(account_id)
+    _log(f"账号 {label}：载入状态 {path}")
+    state.apply(account_state)
+
+    try:
+        return _run_child(plan, run_id, account_id, attempt)
+    finally:
+        # 子进程可能因超时被 kill，也可能异常退出；无论哪种都要把已写入的进度归档，
+        # 否则该账号这一轮的成果会丢失（下次重跑）。_wait_child 已等待进程退出，
+        # 此处读到的是最终值。
+        latest = state.capture()
+        try:
+            state.save(account_id, latest)
+            _log(f"账号 {label}：状态已归档 {path}")
+        except Exception as exc:
+            log.warning(f"{_LOG_TAG} 账号 {label} 状态归档失败：{exc}")
+
+
 def _run_one_account(plan: RunPlan, ledger: Ledger, run_id: str, account_id: int, label: str) -> dict:
     """单个账号：切换（含重试）→ 子进程执行（含重试），返回结果字典。"""
     started = time.monotonic()
@@ -330,10 +363,13 @@ def _run_one_account(plan: RunPlan, ledger: Ledger, run_id: str, account_id: int
                 break  # 账号不存在，重试无意义
             continue
 
-        child = _run_child(plan, run_id, account_id, attempt)
+        # 把本账号的进度镜像进 config.yaml，再拉起子进程；跑完抽回 state/{uid}.yaml。
+        # 否则后跑的账号会读到前一个账号写的时间戳，误判「本周已刷新」而静默跳过。
+        child = _run_with_account_state(plan, run_id, account_id, label, attempt)
         duration = time.monotonic() - started
         ledger.event("account_run", account_id=account_id, account_name=label, attempt=attempt,
-                     ok=child.ok, reason=child.reason, duration_s=round(duration, 1))
+                     ok=child.ok, reason=child.reason, duration_s=round(duration, 1),
+                     note=f"state={state.state_path(account_id)}")
         if child.ok:
             return {"account_id": account_id, "label": label, "ok": True, "reason": "",
                     "attempts": attempt, "duration_s": duration, "duration_text": _fmt_duration(duration)}
@@ -404,6 +440,18 @@ def start() -> bool:
     results: list = []
     ok_all = True
 
+    # 上一次若被强杀，config.yaml 可能停留在某个账号的状态上——先恢复再继续。
+    if state.recover_stale_baseline():
+        _log("检测到上次异常中断残留的状态基线，已恢复 config.yaml 中的进度键")
+        ledger.event("run_start", note="recovered_stale_baseline")
+
+    # 记下本次编排开始前 config.yaml 的进度键原值，收尾时恢复（不把某个账号的
+    # 进度留在共享配置里，避免手工运行其它任务时误判「已刷新」）。
+    try:
+        state.persist_baseline()
+    except Exception as exc:
+        log.warning(f"{_LOG_TAG} 记录状态基线失败，本次跳过收尾恢复：{exc}")
+
     try:
         if not ensure_game_closed(timeout_s=120):
             _log("开始前无法关闭正在运行的游戏，已中止")
@@ -440,6 +488,10 @@ def start() -> bool:
         if plan.restore_first and original_id is not None:
             pause_ctl.checkpoint()
             _restore_account(ledger, original_id)
+        # 进度已归档到 state/{uid}.yaml，把 config.yaml 的进度键还原成本次开始前的值
+        if state.restore_baseline():
+            state.clear_baseline()
+            _log("已恢复 config.yaml 中的进度键（各账号进度保存在 state/）")
 
     _summarize(plan, ledger, results, ok_all=ok_all, run_id=run_id)
     pause_on_success()

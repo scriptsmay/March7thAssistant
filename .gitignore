@@ -217,3 +217,6 @@ CLAUDE.md
 
 # Telemetry server
 telemetry_server/
+
+# 多账号一条龙：按账号存放的运行时进度（运行数据，不入库）
+state/
