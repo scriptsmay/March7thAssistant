@@ -108,8 +108,26 @@ def _known_keys() -> frozenset:
     return frozenset(key for key in STATE_KEYS if key in cfg.config)
 
 
+def _reload() -> None:
+    """从磁盘重读 config.yaml 到内存。
+
+    **必须在每次 capture() 前执行**：子进程是一个独立进程，它用
+    `cfg.set_value()` 写下的进度只落在磁盘上，父进程内存里仍是拉起前的旧值。
+    而 `Config` 只在 `set_value` / `set_values` 时才会 `_load_config()`，
+    父进程读完盘之后就再没重读过——不重读的话 `capture()` 拿到的是陈旧值，
+    归档出去的状态永远等于镜像进来时的状态，这一轮的成果等于没记。
+
+    `_load_config()` 内部调用 `_update_config()`，会用磁盘值覆盖内存同名键，
+    且不会丢弃磁盘上新出现的键。
+    """
+    reload = getattr(cfg, "_load_config", None)
+    if callable(reload):
+        reload(save=False)
+
+
 def capture() -> Dict[str, Any]:
-    """抽取当前 config.yaml 中的状态键（内存值，深拷贝由 get_value 保证）。"""
+    """抽取当前 config.yaml 中的状态键（先重读磁盘，深拷贝由 get_value 保证）。"""
+    _reload()
     return {key: cfg.get_value(key) for key in _known_keys()}
 
 

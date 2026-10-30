@@ -168,6 +168,55 @@ class TestReset:
         assert os.path.exists(state.baseline_path())
 
 
+class TestCaptureReadsDisk:
+    """回归 2026-10-30 win11 真跑暴露的缺陷：capture() 必须读磁盘而不是内存。
+
+    实机现象：账号 B 打满 18000 后，`state/122149825.yaml` 里所有键仍是 0——
+    父进程 `capture()` 拿到的是拉起子进程之前的陈旧内存值。后果比原缺陷更糟：
+    原缺陷是「不打」，归档失效是「每周白打一遍」。
+    """
+
+    def test_capture_sees_value_written_by_other_process(self, tmp_path, monkeypatch):
+        """子进程把进度写到磁盘后，父进程 capture() 必须能读到。"""
+        import yaml
+
+        cfg_path = tmp_path / "config.yaml"
+        # 磁盘上已经是子进程写过的值（18000 打满的时间戳）
+        cfg_path.write_text(
+            "weekly_divergent_timestamp: 1793000000.0\n"
+            "currencywars_timestamp: 0\n"
+            "already_used_codes: [REAL_CODE]\n"
+            "power_plan: []\n",
+            encoding="utf-8",
+        )
+
+        class _StaleMemoryCfg:
+            """模拟真实 Config 在父进程里的状态：内存值停留在拉起子进程之前。"""
+
+            def __init__(self, path):
+                self._path = path
+                self.config = {"weekly_divergent_timestamp": 0, "currencywars_timestamp": 0,
+                               "already_used_codes": [], "power_plan": []}
+
+            def get_value(self, key, default=None):
+                return self.config.get(key, default)
+
+            def set_values(self, values):
+                self.config.update(values)
+
+            def _load_config(self, path=None, save=True):
+                with open(self._path, encoding="utf-8") as file:
+                    loaded = yaml.safe_load(file) or {}
+                self.config.update(loaded)
+
+        monkeypatch.setattr(state, "cfg", _StaleMemoryCfg(cfg_path))
+        monkeypatch.setattr(state, "state_dir", lambda: str(tmp_path / "state"))
+
+        captured = state.capture()
+        assert captured["weekly_divergent_timestamp"] == 1793000000.0
+        assert captured["already_used_codes"] == ["REAL_CODE"]
+
+
 class TestMirrorScenario:
     """端到端复现本次缺陷场景：A 打满后 B 必须仍被判定为「需要执行」。"""
 
